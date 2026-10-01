@@ -110,7 +110,7 @@ Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
   Windows and other systems are unavailable, and selecting datagram there fails
   at initialization with the reason and the alternatives (stream, or UDP/TCP to
   `127.0.0.1`). The JDK prints a one-time restricted-method warning unless the
-  JVM runs with `--enable-native-access=ALL-UNNAMED`. Stream (`SOCK_STREAM`):
+  JVM runs with `--enable-native-access=ALL-UNNAMED` (`--enable-native-access=org.red5.syslog` when the jar is on the module path). Stream (`SOCK_STREAM`):
   `SocketChannel` over `UnixDomainSocketAddress`, LF-terminated frames. Both
   connect lazily and reconnect after a failure; failures go to the backlog. The
   appender selects the type with `unixSocketType` (`DATAGRAM` default, `STREAM`)
