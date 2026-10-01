@@ -17,6 +17,7 @@ import org.red5.syslog.testsupport.TestKeystore;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.core.status.Status;
 
 /** Appender-level TLS: private SSLContext per appender, no JVM-wide javax.net.ssl.* state. Ports 15180-15189. */
 class SyslogAppenderTlsTest {
@@ -131,6 +132,8 @@ class SyslogAppenderTlsTest {
             assertTrue(m.contains("from-good"), m);
             assertNull(s.poll(500), "the appender with the wrong trust store must not deliver");
             assertEquals(1, bad.backlogSize(), "the rejected message waits in the backlog");
+            assertEquals(1, errorsFrom(ctx, bad), "the rejected appender records an error status");
+            assertEquals(0, errorsFrom(ctx, good));
             good.stop();
             bad.stop();
         }
@@ -166,6 +169,7 @@ class SyslogAppenderTlsTest {
             l.info("must-not-arrive");
             assertNull(s.poll(1000), "a certificate for another host name must be rejected");
             assertEquals(1, a.backlogSize(), "the rejected message waits in the backlog");
+            assertEquals(1, errorsFrom(ctx, a), "the host name mismatch is reported");
             a.stop();
         }
     }
@@ -186,6 +190,11 @@ class SyslogAppenderTlsTest {
             assertTrue(m.contains("insecure-ok"), m);
             a.stop();
         }
+    }
+
+    private static long errorsFrom(LoggerContext ctx, SyslogAppender a) {
+        return ctx.getStatusManager().getCopyOfStatusList().stream()
+                .filter(st -> st.getLevel() == Status.ERROR && st.getOrigin() == a).count();
     }
 
     private static void restore(Map<String, String> saved) {

@@ -19,6 +19,10 @@ import org.red5.syslog.impl.AbstractSyslog;
  * writing new messages. Replay is re-entrancy safe: it works on an atomically drained snapshot, never holds the lock
  * while calling out, ignores a nested {@code up()} on the replaying thread, and stops at the first message that fails
  * again, restoring it and everything after it to the front of the buffer in their original order.
+ * <p>
+ * An optional {@link BackLogListener} hears about the start of an outage (the first message backlogged), its end (a
+ * replay that drained everything) and every message discarded (evicted for room, lost on restore, or offered after
+ * {@link #close()}), so an owner can report outages and count loss exactly. Callbacks run outside the lock.
  */
 public class RingBufferBackLogHandler implements SyslogBackLogHandlerIF {
 
@@ -32,9 +36,17 @@ public class RingBufferBackLogHandler implements SyslogBackLogHandlerIF {
     private final Deque<Entry> buffer = new ArrayDeque<>();
     private final int capacity;
     private final ThreadLocal<Replay> replaying = new ThreadLocal<>();
+    private volatile BackLogListener listener;
+    private boolean down;     // guarded by this: an outage is in progress (something was backlogged since the last full replay)
+    private boolean closed;   // guarded by this: close() was called; nothing is kept any more
 
     public RingBufferBackLogHandler(int capacity) {
         this.capacity = Math.max(1, capacity);
+    }
+
+    /** Sets the listener notified of outages, recoveries and discarded messages; null for none. */
+    public void setListener(BackLogListener listener) {
+        this.listener = listener;
     }
 
     @Override
@@ -55,11 +67,31 @@ public class RingBufferBackLogHandler implements SyslogBackLogHandlerIF {
             r.failed = true;
             return;
         }
+        int discarded = 0;
+        boolean wentDown = false;
         synchronized (this) {
-            if (buffer.size() == capacity) {
-                buffer.pollFirst();
+            if (closed) {
+                discarded = 1;
+            } else {
+                if (buffer.size() == capacity) {
+                    buffer.pollFirst();
+                    discarded = 1;
+                }
+                buffer.addLast(new Entry(level, message));
+                if (!down) {
+                    down = true;
+                    wentDown = true;
+                }
             }
-            buffer.addLast(new Entry(level, message));
+        }
+        BackLogListener l = listener;
+        if (l != null) {
+            if (wentDown) {
+                l.down(reason);
+            }
+            if (discarded > 0) {
+                l.evicted(discarded);
+            }
         }
     }
 
@@ -92,6 +124,7 @@ public class RingBufferBackLogHandler implements SyslogBackLogHandlerIF {
         Replay state = new Replay();
         replaying.set(state);
         int done = 0;
+        boolean recovered = false;
         try {
             for (Entry e : batch) {
                 state.failed = false;
@@ -109,15 +142,50 @@ public class RingBufferBackLogHandler implements SyslogBackLogHandlerIF {
             replaying.remove();
             if (done < batch.size()) {
                 restore(batch.subList(done, batch.size()));
+            } else if (!batch.isEmpty()) {
+                synchronized (this) {
+                    if (buffer.isEmpty()) {
+                        down = false;
+                        recovered = true;
+                    }
+                }
             }
+        }
+        BackLogListener l = listener;
+        if (recovered && l != null) {
+            l.up(done);
         }
         return done == batch.size();
     }
 
     /** Puts undelivered entries back ahead of anything logged meanwhile, dropping the oldest if capacity would be exceeded. */
-    private synchronized void restore(List<Entry> undelivered) {
-        for (int i = undelivered.size() - 1; i >= 0 && buffer.size() < capacity; i--) {
-            buffer.addFirst(undelivered.get(i));
+    private void restore(List<Entry> undelivered) {
+        int kept = 0;
+        synchronized (this) {
+            if (!closed) {
+                for (int i = undelivered.size() - 1; i >= 0 && buffer.size() < capacity; i--) {
+                    buffer.addFirst(undelivered.get(i));
+                    kept++;
+                }
+            }
+        }
+        int discarded = undelivered.size() - kept;
+        BackLogListener l = listener;
+        if (discarded > 0 && l != null) {
+            l.evicted(discarded);
+        }
+    }
+
+    /**
+     * Empties the backlog for good: returns the number of messages still waiting, which the caller now owns as lost,
+     * and from here on every message offered to {@link #log} is reported through {@link BackLogListener#evicted}.
+     */
+    public int close() {
+        synchronized (this) {
+            closed = true;
+            int n = buffer.size();
+            buffer.clear();
+            return n;
         }
     }
 

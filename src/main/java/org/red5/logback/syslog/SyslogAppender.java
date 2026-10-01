@@ -27,6 +27,8 @@ import org.red5.syslog.SyslogMessageIF;
 import org.red5.syslog.SyslogMessageModifierIF;
 import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogConfig;
+import org.red5.syslog.impl.backlog.BackLogListener;
+import org.red5.syslog.impl.backlog.NullSyslogBackLogHandler;
 import org.red5.syslog.impl.backlog.RingBufferBackLogHandler;
 import org.red5.syslog.impl.message.processor.structured.StructuredSyslogMessageProcessor;
 import org.red5.syslog.impl.message.structured.StructuredSyslogMessage;
@@ -166,13 +168,19 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 }
                 modifiers.forEach(cfg::addMessageModifier);
             }
-            cfg.setThrowExceptionOnWrite(false);  // failures go to the backlog handlers, never into the logging path
             backlog = null;
             if (backlogSize > 0) {
+                cfg.setThrowExceptionOnWrite(false);  // failures go to the backlog, which reports and counts them
                 backlog = new RingBufferBackLogHandler(backlogSize);
+                backlog.setListener(new BacklogReporter());
                 cfg.addBackLogHandler(backlog);
                 // one reconnect covers a stale persistent connection; more only multiplies connect timeouts while the server is down
                 cfg.setWriteRetries(1);
+            } else {
+                // no backlog: a failed write surfaces in emit(), which counts and reports it; the null handler keeps the
+                // ported default (print to System.err) out of the way
+                cfg.setThrowExceptionOnWrite(true);
+                cfg.addBackLogHandler(NullSyslogBackLogHandler.INSTANCE);
             }
             // the Syslog registry is JVM-static and case-insensitive, so the name must be unique per appender
             instanceName = "red5-" + (getName() != null ? getName() + "-" : "") + COUNTER.incrementAndGet();
@@ -460,6 +468,24 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         }
     }
 
+    /** Turns backlog events into status messages and dropped counts. */
+    private final class BacklogReporter implements BackLogListener {
+        @Override
+        public void down(String reason) {
+            reportFailure("syslog destination unavailable: " + reason);
+        }
+
+        @Override
+        public void up(int replayed) {
+            addInfo("syslog destination recovered; replayed " + replayed + " backlogged messages");
+        }
+
+        @Override
+        public void evicted(int count) {
+            dropped.addAndGet(count);
+        }
+    }
+
     /** Number of events discarded because the queue was full or the appender was stopping. */
     public long getDroppedCount() {
         return dropped.get();
@@ -510,7 +536,20 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             structured = new AppenderStructuredMessage(structuredDataMap, text);
         }
         RingBufferBackLogHandler h = backlog;
-        if (h != null && out instanceof AbstractSyslog as && h.size() > 0) {
+        if (h == null) {
+            try {
+                if (structured != null) {
+                    out.log(level, structured);
+                } else {
+                    out.log(level, line);
+                }
+            } catch (RuntimeException e) {
+                dropped.incrementAndGet();
+                reportFailure("syslog write failed: " + e.getMessage());
+            }
+            return;
+        }
+        if (out instanceof AbstractSyslog as && h.size() > 0) {
             if (!h.replay(as::logPrepared)) {
                 if (structured != null) {
                     as.logToBackLog(level, structured);
@@ -571,10 +610,15 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             }
             stopLayouts();
             destroySyslog();
+            // whatever is still waiting in the backlog is lost now; count it, and anything an abandoned writer adds later
+            RingBufferBackLogHandler h = backlog;
+            int leftInBacklog = h == null ? 0 : h.close();
+            dropped.addAndGet(leftInBacklog);
             long total = dropped.get();
             if (total > 0) {
                 addWarn("syslog appender [" + getName() + "] stopped; " + total + " events dropped in total ("
-                        + droppedWhileStopping.get() + " while stopping)");
+                        + droppedWhileStopping.get() + " while stopping)"
+                        + (leftInBacklog > 0 ? "; " + leftInBacklog + " messages were still in the backlog" : ""));
             }
         }
     }

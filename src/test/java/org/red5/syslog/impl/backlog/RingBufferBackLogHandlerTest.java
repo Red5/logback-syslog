@@ -72,4 +72,82 @@ class RingBufferBackLogHandlerTest {
         h.replay((level, msg) -> rest.add(msg));
         assertEquals(List.of("a", "b"), rest);
     }
+
+    /** Records listener callbacks. */
+    private static final class Events implements BackLogListener {
+        final List<String> calls = new ArrayList<>();
+        int evicted;
+
+        @Override
+        public void down(String reason) {
+            calls.add("down:" + reason);
+        }
+
+        @Override
+        public void up(int replayed) {
+            calls.add("up:" + replayed);
+        }
+
+        @Override
+        public void evicted(int count) {
+            evicted += count;
+        }
+    }
+
+    @Test
+    void listenerSeesOneDownPerOutageEvictionsAndUpWithReplayCount() {
+        RingBufferBackLogHandler h = new RingBufferBackLogHandler(3);
+        Events ev = new Events();
+        h.setListener(ev);
+        for (int i = 0; i < 10; i++) {
+            h.log(null, 6, "m" + i, "refused");
+        }
+        assertEquals(List.of("down:refused"), ev.calls, "one down per outage, not one per message");
+        assertEquals(7, ev.evicted);
+        assertEquals(3, h.size());
+        assertTrue(h.replay((level, msg) -> { }));
+        assertEquals(List.of("down:refused", "up:3"), ev.calls);
+        h.log(null, 6, "again", "reset");
+        assertEquals(List.of("down:refused", "up:3", "down:reset"), ev.calls, "a new outage is reported again");
+    }
+
+    @Test
+    void failedReplayIsNotAnUpAndRestoreOverflowIsCounted() throws Exception {
+        RingBufferBackLogHandler h = new RingBufferBackLogHandler(2);
+        Events ev = new Events();
+        h.setListener(ev);
+        h.log(null, 6, "a", "down");
+        h.log(null, 6, "b", "down");
+        boolean drained = h.replay((level, msg) -> {
+            // another thread backlogs a newer message while the replay runs
+            Thread other = Thread.ofPlatform().start(() -> h.log(null, 6, "c", "down"));
+            try {
+                other.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            h.log(null, level, msg, "still down");   // and "a" fails again
+        });
+        assertFalse(drained);
+        assertEquals(List.of("down:down"), ev.calls, "a failed replay is not a recovery");
+        assertEquals(1, ev.evicted, "restoring a and b next to c exceeds capacity 2 by one");
+        List<String> rest = new ArrayList<>();
+        h.replay((level, msg) -> rest.add(msg));
+        assertEquals(List.of("b", "c"), rest);
+    }
+
+    @Test
+    void closeReturnsLeftoversAndCountsLateMessages() {
+        RingBufferBackLogHandler h = new RingBufferBackLogHandler(5);
+        Events ev = new Events();
+        h.setListener(ev);
+        h.log(null, 6, "a", "down");
+        h.log(null, 6, "b", "down");
+        assertEquals(2, h.close());
+        assertEquals(0, h.size());
+        h.log(null, 6, "late", "down");
+        assertEquals(0, h.size(), "a closed backlog keeps nothing");
+        assertEquals(1, ev.evicted, "a message offered after close is counted, not silently lost");
+        assertEquals(0, h.close());
+    }
 }
