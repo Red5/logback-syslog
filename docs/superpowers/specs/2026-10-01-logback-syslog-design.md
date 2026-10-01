@@ -12,7 +12,7 @@ syslog4j 0.9.46 client and server feature set, repackaged under `org.red5`.
 Success criteria:
 - One jar, runtime dependencies limited to `logback-classic` and `slf4j-api` (both `provided`).
 - JDK 21 minimum (`release=21`).
-- Existing papertrail `logback.xml` appender configs work with only the class name changed.
+- Existing `logback.xml` configs for Logback's built-in `SyslogAppender` work with only the class name changed. Configs for the papertrail `Syslog4jAppender` (nested `<layout>` and `<syslogConfig>`) do not: they are migrated by mapping settings to flat properties (see the manual, chapter 1). Accepting the papertrail nested form is a possible follow-up.
 - The logging path never blocks request threads and never throws.
 - All syslog4j features are present except the log4j integration.
 
@@ -161,7 +161,7 @@ syslog severity, and sent through the configured `SyslogIF`.
 </appender>
 ```
 
-- Papertrail-compatible names: `syslogHost`, `port`, `facility`, `suffixPattern`,
+- Names shared with Logback's built-in `SyslogAppender`: `syslogHost`, `port`, `facility`, `suffixPattern`,
   `stackTracePattern`, `throwableExcluded`, `sendLocalName`, `sendLocalTimestamp`,
   `maxMessageLength`.
 - Additional: `protocol`, `unixSocketPath`, `rfc5424`, `appName`, `queueSize`,

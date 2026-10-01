@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appender configuration - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html" class="current">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 3: Appender configuration</h1>
+
+<p>The appender is <code>org.red5.logback.syslog.SyslogAppender</code>. Properties are set as child
+elements in <code>logback.xml</code>, in any order, exactly as with Logback's own appenders. Invalid
+values do not throw: the appender writes an error to Logback's status system and does not start (see
+<a href="troubleshooting.html">Chapter 8</a>).</p>
+
+<h2>Connection</h2>
+<table>
+<tr><th>Property</th><th>Type</th><th>Default</th><th>Description</th></tr>
+<tr><td class="prop">syslogHost</td><td>String</td><td><code>localhost</code></td><td>Host name or address of the syslog server. Ignored for <code>UNIX</code>. For TLS this is also the name the server certificate must match.</td></tr>
+<tr><td class="prop">port</td><td>int</td><td><code>514</code></td><td>Server port, 1 to 65535. Ignored for <code>UNIX</code>. Conventional ports are 514 (UDP and TCP) and 6514 (TLS).</td></tr>
+<tr><td class="prop">protocol</td><td>enum</td><td><code>UDP</code></td><td><code>UDP</code>, <code>TCP</code>, <code>TLS</code> or <code>UNIX</code>. See <a href="transports.html">Chapter 4</a>.</td></tr>
+<tr><td class="prop">unixSocketPath</td><td>String</td><td><code>/dev/log</code></td><td>Socket path for <code>UNIX</code>. Stream sockets only.</td></tr>
+</table>
+<h2>Message content</h2>
+<table>
+<tr><th>Property</th><th>Type</th><th>Default</th><th>Description</th></tr>
+<tr><td class="prop">facility</td><td>String</td><td><code>USER</code></td><td>Syslog facility: <code>KERN</code>, <code>USER</code>, <code>MAIL</code>, <code>DAEMON</code>, <code>AUTH</code>, <code>SYSLOG</code>, <code>LPR</code>, <code>NEWS</code>, <code>UUCP</code>, <code>CRON</code>, <code>AUTHPRIV</code>, <code>FTP</code> or <code>LOCAL0</code> to <code>LOCAL7</code>. Case-insensitive.</td></tr>
+<tr><td class="prop">appName</td><td>String</td><td>none</td><td>Program name. In RFC 3164 mode it is the tag before the colon (<code>red5:</code>); with <code>rfc5424</code> it is the APP-NAME field (1 to 48 printable ASCII characters, no spaces).</td></tr>
+<tr><td class="prop">suffixPattern</td><td>String</td><td><code>[%thread] %logger %msg</code></td><td>Logback <code>PatternLayout</code> pattern for the text of each syslog message. Must not be empty. Exception output is never taken from this pattern.</td></tr>
+<tr><td class="prop">stackTracePattern</td><td>String</td><td><code>%ex{full}</code></td><td>Pattern used to render exceptions; each resulting line is sent as its own message. Must not be empty unless <code>throwableExcluded</code> is true.</td></tr>
+<tr><td class="prop">throwableExcluded</td><td>boolean</td><td><code>false</code></td><td>When true, exceptions are not sent.</td></tr>
+<tr><td class="prop">sendLocalName</td><td>boolean</td><td><code>true</code></td><td>Include the local host name in the RFC 3164 header. Ignored with <code>rfc5424</code>.</td></tr>
+<tr><td class="prop">sendLocalTimestamp</td><td>boolean</td><td><code>true</code></td><td>Include a timestamp in the RFC 3164 header. Ignored with <code>rfc5424</code>.</td></tr>
+<tr><td class="prop">maxMessageLength</td><td>int</td><td><code>1024</code>; <code>2048</code> with <code>rfc5424</code></td><td>Maximum size in bytes of one message including its header; at least 128. See <a href="formats.html#length">Message length</a>.</td></tr>
+<tr><td class="prop">rfc5424</td><td>boolean</td><td><code>false</code></td><td>Send RFC 5424 frames instead of RFC 3164. Enables <code>structuredData</code>. See <a href="formats.html">Chapter 5</a>.</td></tr>
+</table>
+<h2>TLS</h2>
+<table>
+<tr><th>Property</th><th>Type</th><th>Default</th><th>Description</th></tr>
+<tr><td class="prop">sslTrustStore</td><td>String</td><td>none</td><td>Path of the trust store holding the certificates that may sign the server certificate. JKS and PKCS12 are detected automatically.</td></tr>
+<tr><td class="prop">sslTrustStorePassword</td><td>String</td><td>none</td><td>Password of the trust store.</td></tr>
+<tr><td class="prop">sslKeyStore</td><td>String</td><td>none</td><td>Path of a key store with the client certificate, for servers that require client authentication.</td></tr>
+<tr><td class="prop">sslKeyStorePassword</td><td>String</td><td>none</td><td>Password of the key store.</td></tr>
+<tr><td class="prop">sslVerifyHostname</td><td>boolean</td><td><code>true</code></td><td>Require the server certificate to match <code>syslogHost</code>. Setting this to false is insecure; see <a href="transports.html#tls">Chapter 4</a>.</td></tr>
+</table>
+<h2>Delivery</h2>
+<table>
+<tr><th>Property</th><th>Type</th><th>Default</th><th>Description</th></tr>
+<tr><td class="prop">sync</td><td>boolean</td><td><code>false</code></td><td>Send from the calling thread instead of through the queue. Not recommended for TCP, TLS or unix sockets, because a slow server then slows the application.</td></tr>
+<tr><td class="prop">queueSize</td><td>int</td><td><code>4096</code></td><td>Capacity of the in-memory queue between the application and the writer thread. Must be positive.</td></tr>
+<tr><td class="prop">blockWhenFull</td><td>boolean</td><td><code>false</code></td><td>When the queue is full: false drops the new event (and counts it); true makes the logging call wait for room.</td></tr>
+<tr><td class="prop">shutdownTimeoutMs</td><td>long</td><td><code>2000</code></td><td>How long <code>stop()</code> waits for queued events to be written. 0 means do not wait.</td></tr>
+<tr><td class="prop">backlogSize</td><td>int</td><td><code>1000</code></td><td>Messages kept in memory while the server cannot be reached, then replayed in order. 0 disables the backlog.</td></tr>
+</table>
+<p>The queue, backlog and shutdown settings are explained in <a href="reliability.html">Chapter 6</a>.</p>
+<h2>Nested elements</h2>
+<h3>modifier</h3>
+<p>A modifier changes the text of each message before it is sent. Name the class in the
+<code>class</code> attribute and set its properties as child elements:</p>
+<pre><code>&lt;modifier class="org.red5.syslog.impl.message.modifier.text.PrefixSyslogMessageModifier"&gt;
+  &lt;prefix&gt;[r5]&lt;/prefix&gt;
+&lt;/modifier&gt;
+&lt;modifier class="org.red5.syslog.impl.message.modifier.text.SuffixSyslogMessageModifier"&gt;
+  &lt;suffix&gt;END&lt;/suffix&gt;
+&lt;/modifier&gt;
+&lt;modifier class="org.red5.syslog.impl.message.modifier.escape.HTMLEntityEscapeSyslogMessageModifier"/&gt;</code></pre>
+
+<p>Modifiers run in the order written. With <code>rfc5424</code> they act on the message text only, not on
+the header or structured data.</p>
+<div class="note"><strong>Which modifiers work from XML</strong><p><code>PrefixSyslogMessageModifier</code> (property <code>prefix</code>),
+<code>SuffixSyslogMessageModifier</code> (<code>suffix</code>) and
+<code>HTMLEntityEscapeSyslogMessageModifier</code> can be configured in XML. The case, checksum, hash, MAC and
+sequence modifiers need constructor arguments or a configuration object, so they can only be added in code (see
+<a href="library.html">Chapter 7</a>). An unknown class name is reported as an error by Logback and ignored; the
+appender still starts, without that modifier.</p></div>
+
+<h3>structuredData</h3>
+<p>Adds an RFC 5424 structured data element to every message. It has an effect only when
+<code>rfc5424</code> is true; otherwise the appender records a warning. Give an <code>id</code> and any number of
+<code>entry</code> elements:</p>
+<pre><code>&lt;structuredData&gt;
+  &lt;id&gt;meta@32473&lt;/id&gt;
+  &lt;entry&gt;&lt;name&gt;app&lt;/name&gt;&lt;value&gt;live&lt;/value&gt;&lt;/entry&gt;
+  &lt;entry&gt;&lt;name&gt;site&lt;/name&gt;&lt;value&gt;eu-west&lt;/value&gt;&lt;/entry&gt;
+&lt;/structuredData&gt;</code></pre>
+
+<p>The id and the parameter names must be 1 to 32 printable ASCII characters without a space, <code>=</code>,
+<code>]</code> or <code>"</code>. Ids must be unique. Parameter values may contain any text; the characters
+<code>"</code>, <code>\</code> and <code>]</code> are escaped as the RFC requires. Use an enterprise
+number of your own after the <code>@</code> (the example uses 32473, which RFC 5612 reserves for documentation).</p>
+<div class="note"><strong>Why not &lt;param&gt;?</strong><p>Logback's configurator reserves the element name
+<code>param</code> and ignores attributes on nested components, so the id is a child element and parameters are
+<code>entry</code> elements.</p></div>
+
+<h2>Accessing the dropped counter</h2>
+<p>The appender counts events it could not deliver. Read the count in code:</p>
+<pre><code>LoggerContext ctx = (LoggerContext) LoggerFactory.getILoggerFactory();
+SyslogAppender syslog =
+    (SyslogAppender) ctx.getLogger(Logger.ROOT_LOGGER_NAME).getAppender("SYSLOG");
+long dropped = syslog.getDroppedCount();</code></pre>
+
+<div class="pager"><span><a href="getting-started.html">&laquo; Chapter 2: Getting started</a></span><span><a href="transports.html">Chapter 4: Transports and TLS &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

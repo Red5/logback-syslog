@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html" class="current">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 2: Getting started</h1>
+
+<h2>Adding the jar</h2>
+<p>The artifact is <code>org.red5:red5-logback-syslog</code>. It is not yet published to a public
+repository, so build it from source and install it locally:</p>
+<pre><code>git clone https://github.com/Red5/logback-syslog.git
+cd logback-syslog
+mvn -DskipTests install</code></pre>
+<p>Then depend on it in your Maven build:</p><div class="filename">pom.xml</div><pre><code>&lt;dependency&gt;
+  &lt;groupId&gt;org.red5&lt;/groupId&gt;
+  &lt;artifactId&gt;red5-logback-syslog&lt;/artifactId&gt;
+  &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+&lt;/dependency&gt;</code></pre>
+<p>For a Red5 server, copy <code>target/red5-logback-syslog-1.0.0-SNAPSHOT.jar</code> next to the other
+logging jars in <code>lib/</code>. Logback and SLF4J are already there.</p>
+
+<h2>A first configuration</h2>
+<p>Add the appender to <code>logback.xml</code> and attach it to the root logger (or to any logger):</p>
+<div class="filename">logback.xml</div><pre><code>&lt;configuration&gt;
+  &lt;appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender"&gt;
+    &lt;syslogHost&gt;127.0.0.1&lt;/syslogHost&gt;
+    &lt;port&gt;5140&lt;/port&gt;
+    &lt;facility&gt;LOCAL0&lt;/facility&gt;
+    &lt;appName&gt;red5&lt;/appName&gt;
+  &lt;/appender&gt;
+
+  &lt;root level="INFO"&gt;
+    &lt;appender-ref ref="SYSLOG"/&gt;
+  &lt;/root&gt;
+&lt;/configuration&gt;</code></pre>
+
+<p>This sends RFC 3164 messages over UDP to <code>127.0.0.1:5140</code>. Every property has a default;
+only <code>syslogHost</code> normally needs changing. The full list is in
+<a href="configuration.html">Chapter 3</a>.</p>
+
+<h2>Checking that messages arrive</h2>
+<p>The jar contains a small syslog server you can use as a listener. Start it on the same port in another
+terminal:</p>
+<pre><code>java -cp red5-logback-syslog-1.0.0-SNAPSHOT.jar \
+     org.red5.syslog.server.SyslogServerMain -h 127.0.0.1 -p 5140 udp</code></pre>
+
+<p>Log something from your application:</p>
+<pre><code>Logger log = LoggerFactory.getLogger("org.red5.server.Demo");
+log.info("stream started");
+log.error("publish failed", new IllegalStateException("no codec"));</code></pre>
+<p>The listener shows each message as it arrives. Over the wire the two calls above look like this (the host name is that of the sending machine):</p><pre><code>&lt;134&gt;Oct  1 09:17:11 red5host red5: [main] org.red5.server.Demo stream started
+&lt;131&gt;Oct  1 09:17:11 red5host red5: [main] org.red5.server.Demo publish failed
+&lt;131&gt;Oct  1 09:17:11 red5host red5: java.lang.IllegalStateException: no codec
+&lt;131&gt;Oct  1 09:17:11 red5host red5: 	at org.red5.server.Demo.main(Demo.java:12)</code></pre>
+
+<p>The number in angle brackets is the priority: the facility times 8, plus the severity.
+<code>LOCAL0</code> is facility 16, so 128, plus 6 for <code>INFO</code> gives 134, and 128 plus 3 for
+<code>ERROR</code> gives 131. The exception was sent as its own messages, one per line.</p>
+
+<h2>If nothing appears</h2>
+<p>Turn on Logback's status output by adding <code>debug="true"</code> to the root element:</p>
+<pre><code>&lt;configuration debug="true"&gt;</code></pre>
+
+<p>The appender reports configuration problems there, and does not start if a setting is invalid (for example
+a port out of range). See <a href="troubleshooting.html">Chapter 8</a> for the messages you may see.</p>
+
+<h2>A production-style example</h2>
+<p>A TLS connection to a remote collector, RFC 5424 output with structured data, and a bounded queue and backlog
+(each setting is explained in the following chapters):</p>
+<div class="filename">logback.xml</div><pre><code>&lt;appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender"&gt;
+  &lt;syslogHost&gt;logs.example.com&lt;/syslogHost&gt;
+  &lt;port&gt;6514&lt;/port&gt;
+  &lt;protocol&gt;TLS&lt;/protocol&gt;
+  &lt;sslTrustStore&gt;/etc/red5/syslog-truststore.p12&lt;/sslTrustStore&gt;
+  &lt;sslTrustStorePassword&gt;changeit&lt;/sslTrustStorePassword&gt;
+
+  &lt;facility&gt;LOCAL0&lt;/facility&gt;
+  &lt;rfc5424&gt;true&lt;/rfc5424&gt;
+  &lt;appName&gt;red5&lt;/appName&gt;
+  &lt;suffixPattern&gt;%logger{35} %msg&lt;/suffixPattern&gt;
+  &lt;structuredData&gt;
+    &lt;id&gt;origin@32473&lt;/id&gt;
+    &lt;entry&gt;&lt;name&gt;app&lt;/name&gt;&lt;value&gt;live&lt;/value&gt;&lt;/entry&gt;
+  &lt;/structuredData&gt;
+
+  &lt;queueSize&gt;4096&lt;/queueSize&gt;
+  &lt;backlogSize&gt;1000&lt;/backlogSize&gt;
+&lt;/appender&gt;</code></pre>
+
+<div class="pager"><span><a href="introduction.html">&laquo; Chapter 1: Introduction</a></span><span><a href="configuration.html">Chapter 3: Appender configuration &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

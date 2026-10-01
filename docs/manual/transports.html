@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transports and TLS - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html" class="current">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 4: Transports and TLS</h1>
+
+<p>Select the transport with the <code>protocol</code> property.</p>
+<table>
+<tr><th>Protocol</th><th>Use it for</th><th>Notes</th></tr>
+<tr><td class="prop"><code>UDP</code></td><td>A local or trusted-network syslog daemon</td><td>Fast, and nothing is retained if the server is down: UDP gives no delivery feedback. Each message must fit one datagram (65507 bytes at most).</td></tr>
+<tr><td class="prop"><code>TCP</code></td><td>Reliable delivery on a trusted network</td><td>Messages are LF-delimited. Failed writes go to the backlog and are replayed.</td></tr>
+<tr><td class="prop"><code>TLS</code></td><td>Remote collectors and hosted services</td><td>TCP inside TLS, with host name verification on by default.</td></tr>
+<tr><td class="prop"><code>UNIX</code></td><td>A daemon listening on a unix <em>stream</em> socket</td><td>Stream sockets only; see below.</td></tr>
+</table>
+
+<h2 id="udp">UDP</h2>
+<p>The default. Set <code>syslogHost</code> and <code>port</code>. The host name is resolved once and cached for the
+lifetime of the appender, so a server that moves to a new address needs the appender to be restarted. A message
+longer than <code>maxMessageLength</code> is split (RFC 3164) or truncated (RFC 5424); the limit is capped at 65507
+bytes, and the appender records a warning when it lowers a larger configured value.</p>
+
+<h2 id="tcp">TCP</h2>
+<pre><code>&lt;protocol&gt;TCP&lt;/protocol&gt;
+&lt;syslogHost&gt;logs.example.com&lt;/syslogHost&gt;
+&lt;port&gt;514&lt;/port&gt;</code></pre>
+
+<p>The connection is opened when the first message is sent and kept open. Connecting is bounded by a 3 second
+timeout. If the server cannot be reached, messages wait in the backlog and the appender reconnects with a
+growing delay; see <a href="reliability.html">Chapter 6</a>.</p>
+<p>Messages are terminated by a line feed in both RFC 3164 and RFC 5424 mode (RFC 6587 non-transparent framing).
+Octet-counted framing is not implemented. A message that contains line breaks is sent as one syslog message per
+line, so the framing cannot be corrupted.</p>
+
+<h2 id="tls">TLS</h2>
+<p>TLS is TCP inside a TLS session. Configure a trust store holding the certificate (or its issuer) of the
+server:</p>
+<pre><code>&lt;protocol&gt;TLS&lt;/protocol&gt;
+&lt;syslogHost&gt;logs.example.com&lt;/syslogHost&gt;
+&lt;port&gt;6514&lt;/port&gt;
+&lt;sslTrustStore&gt;/etc/red5/syslog-truststore.p12&lt;/sslTrustStore&gt;
+&lt;sslTrustStorePassword&gt;changeit&lt;/sslTrustStorePassword&gt;</code></pre>
+
+<p>To create a trust store from a server certificate file:</p>
+<pre><code>keytool -importcert -alias syslog -file logs.example.com.crt \
+        -keystore syslog-truststore.p12 -storetype PKCS12 -storepass changeit</code></pre>
+
+<p>If the server demands a client certificate, also set <code>sslKeyStore</code> and
+<code>sslKeyStorePassword</code>.</p>
+<p>The stores are read when the appender starts. A store file that does not exist, cannot be read, or does not
+open with the given password stops the appender from starting; the reason is recorded as an error in
+Logback's status output (for example <em>File does not exist or it does not refer to a normal file</em>).</p>
+
+<h3>Host name verification</h3>
+<p>The server certificate must contain <code>syslogHost</code> as a subject alternative name (a DNS name, or an
+IP address when you connect by address). A certificate for a different name is rejected and the connection fails;
+the failure is reported in Logback's status output (for example <em>No subject alternative DNS name matching
+logs.example.com found</em>) and the affected messages are backlogged. Server name indication is sent for
+host names.</p>
+<div class="warning"><strong>Disabling verification</strong><p><code>&lt;sslVerifyHostname&gt;false&lt;/sslVerifyHostname&gt;</code> accepts
+any certificate chaining to a trusted issuer for any host name, which allows a man-in-the-middle to read the logs.
+Use it only for testing, or when the trust store contains nothing but the one server certificate.</p></div>
+
+<h3>Isolation from the JVM's TLS settings</h3>
+<p>The appender builds its own TLS context from the stores you configure. It does not read or change the
+JVM-wide <code>javax.net.ssl.*</code> system properties, so it does not interfere with other TLS clients in Red5, and
+several appenders may use different stores. The handshake is bounded by the same 3 second timeout as connecting.</p>
+<div class="note"><strong>Trust store required</strong><p>The appender currently refuses a TLS configuration with neither
+<code>sslTrustStore</code> nor <code>sslKeyStore</code>. To trust the public certificate authorities (for a hosted
+service with a publicly issued certificate), point <code>sslTrustStore</code> at the JDK's
+<code>$JAVA_HOME/lib/security/cacerts</code> with the password <code>changeit</code>.</p></div>
+
+<h2 id="unix">Unix sockets</h2>
+<pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;
+&lt;unixSocketPath&gt;/var/run/syslog-ng/syslog.sock&lt;/unixSocketPath&gt;</code></pre>
+
+<p>The appender connects with the JDK's unix domain socket support (no native library) and writes one
+line per message.</p>
+<div class="warning"><strong>Stream sockets only</strong><p>Java 21 has no unix <em>datagram</em> sockets. Most Linux systems expose
+<code>/dev/log</code> as a datagram socket (journald, and rsyslog by default), and the appender cannot write to
+it. It works with a listener that accepts <em>stream</em> connections, such as a syslog-ng
+<code>unix-stream()</code> source or an rsyslog stream input. For local logging to journald or rsyslog use UDP to
+<code>127.0.0.1</code> or TCP instead.</p></div>
+
+<div class="pager"><span><a href="configuration.html">&laquo; Chapter 3: Appender configuration</a></span><span><a href="formats.html">Chapter 5: Message formats &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>
