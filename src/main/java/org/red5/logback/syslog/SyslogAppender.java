@@ -915,6 +915,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void addStructuredData(StructuredDataParam sd) { structuredData.add(sd); }
     public void setSyslogHost(String v) { this.syslogHost = v; }
     public void setPort(int v) { this.port = v; }
+    /** Transport, default UDP. For UNIX see {@link #setUnixSocketType}; use RFC 3164 (the default) with /dev/log. */
     public void setProtocol(Protocol v) { this.protocol = v; }
     public void setFacility(String v) { this.facility = v; }
     public void setSuffixPattern(String v) { this.suffixPattern = v; }
@@ -952,9 +953,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
      * rsyslog) and /var/run/syslog (macOS) are datagram sockets. STREAM writes newline-terminated messages on a stream
      * connection, for stream listeners such as syslog-ng unix-stream. DATAGRAM calls libc through java.lang.foreign
      * (used reflectively: a preview API in JDK 21, final from JDK 22, no flag needed); the JDK prints a one-time warning
-     * about a restricted method unless the JVM runs with {@code --enable-native-access=ALL-UNNAMED}. DATAGRAM works on
-     * Linux and macOS; Windows is unsupported. If it is unavailable the appender does not start and reports why. Must
-     * not be null.
+     * about a restricted method unless the JVM runs with {@code --enable-native-access=ALL-UNNAMED} (or
+     * {@code --enable-native-access=org.red5.syslog} on the module path). DATAGRAM works on Linux and macOS; Windows is
+     * unsupported. If it is unavailable the appender does not start and reports why. For /dev/log use RFC 3164 (the
+     * default): journald and rsyslog do not parse RFC 5424 there, and the appender warns when rfc5424 is combined with
+     * DATAGRAM; use rfc5424 with network collectors or stream listeners that parse it. maxMessageLength is capped at
+     * 65507 for DATAGRAM. Must not be null.
      */
     public void setUnixSocketType(UnixSocketType v) { this.unixSocketType = v; }
     public UnixSocketType getUnixSocketType() { return unixSocketType; }

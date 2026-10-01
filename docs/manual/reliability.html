@@ -125,7 +125,8 @@ backlog then happens on the next logging call. Prefer the default.</p>
 <tr><td>ERROR</td><td><code>syslog destination unavailable: &hellip;</code></td><td>A write or connect failed. Messages are being backlogged. Rate limited to one per 10 seconds.</td></tr>
 <tr><td>INFO</td><td><code>syslog destination recovered; replayed N backlogged messages</code></td><td>The server is back and the backlog was sent.</td></tr>
 <tr><td>WARN</td><td><code>syslog queue full; N events dropped so far</code></td><td>The queue overflowed. Rate limited to one per 10 seconds.</td></tr>
-<tr><td>WARN</td><td><code>syslog appender [NAME]: maxMessageLength N lowered to 65507 (UDP datagram limit)</code></td><td>The configured length is larger than a UDP datagram can carry.</td></tr>
+<tr><td>WARN</td><td><code>syslog appender [NAME]: maxMessageLength N lowered to 65507 (UDP datagram limit)</code>, or <code>(unix datagram limit)</code></td><td>The configured length is larger than one datagram may carry.</td></tr>
+<tr><td>WARN</td><td><code>syslog appender [NAME]: local syslog daemons reading /dev/log (journald, rsyslog) do not parse RFC 5424 &hellip;</code></td><td><code>rfc5424</code> is set with a unix datagram socket; use RFC 3164 for <code>/dev/log</code>.</td></tr>
 <tr><td>WARN</td><td><code>syslog appender [NAME] stopped; N events dropped in total &hellip;</code></td><td>Events were lost during the appender's life; see the counter above.</td></tr>
 </table>
 <p>To see these messages, add <code>debug="true"</code> to <code>&lt;configuration&gt;</code>, or register a

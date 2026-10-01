@@ -21,7 +21,8 @@ import java.util.Optional;
  * {@code close}) through the foreign function API in {@code java.lang.foreign}. That API is a preview API in JDK 21 and
  * final from JDK 22; it is used only through reflection, so this class compiles for release 21 without
  * {@code --enable-preview} and runs unchanged on JDK 21 and 22+. The first native call makes the JDK print a one-time
- * warning about a restricted method; run with {@code --enable-native-access=ALL-UNNAMED} to silence it.</p>
+ * warning about a restricted method; run with {@code --enable-native-access=ALL-UNNAMED} (or
+ * {@code --enable-native-access=org.red5.syslog} on the module path) to silence it.</p>
  *
  * <p>Sends use {@code MSG_DONTWAIT} and never block: when the receiver's buffer is full the send fails with an
  * IOException (EAGAIN or ENOBUFS), as does a send after the receiver went away (ECONNREFUSED). Error messages carry

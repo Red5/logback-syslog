@@ -146,9 +146,11 @@ local ports in the 15140 to 15199 range, so do not run two builds at the same ti
 
 - Unix datagram sockets (`unixSocketType` `DATAGRAM`, the default) call libc through `java.lang.foreign`, which is a
   preview API in Java 21 and final from Java 22. It is used reflectively, so no `--enable-preview` flag is needed, but
-  the JDK prints a one-time warning about a restricted method; run with `--enable-native-access=ALL-UNNAMED` to
-  silence it. They work on Linux and macOS only; Windows is unsupported (use UDP or TCP to `127.0.0.1`). The macOS
+  the JDK prints a one-time warning about a restricted method; run with `--enable-native-access=ALL-UNNAMED` (or
+  `--enable-native-access=org.red5.syslog` when the jar is on the module path) to silence it. They work on Linux and macOS only; Windows is unsupported (use UDP or TCP to `127.0.0.1`). The macOS
   socket layout follows the system headers but is untested; only Linux is tested. `STREAM` needs none of this.
+- journald and rsyslog do not parse RFC 5424 on `/dev/log`; use RFC 3164 (the default) there, and `rfc5424` with
+  network collectors or stream listeners that parse it.
 - TCP frames are LF-delimited in both formats; octet-counted framing (RFC 6587) is not implemented.
 - The appender requires a TLS trust store or key store to be configured; for public certificate authorities point
   `sslTrustStore` at the JDK's `cacerts`.

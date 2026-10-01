@@ -94,6 +94,10 @@ On macOS the local socket is <code>/var/run/syslog</code>:</p>
 <pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;
 &lt;unixSocketPath&gt;/var/run/syslog&lt;/unixSocketPath&gt;</code></pre>
 
+<p>For <code>/dev/log</code> use RFC 3164, the default: journald and rsyslog's <code>/dev/log</code> input do not
+parse RFC 5424 and log its header as part of the message text, so the appender warns when <code>rfc5424</code> is set with
+<code>DATAGRAM</code>. Use <code>rfc5424</code> with network collectors or stream listeners that parse it.</p>
+
 <p>A daemon that listens on a unix <em>stream</em> socket, such as a syslog-ng <code>unix-stream()</code> source or an
 rsyslog stream input, needs <code>STREAM</code>; the appender then writes one line per message:</p>
 <pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;
@@ -103,11 +107,10 @@ rsyslog stream input, needs <code>STREAM</code>; the appender then writes one li
 <div class="note"><strong>Datagram sockets and native access</strong><p>The JDK has no unix datagram channel, so for
 <code>DATAGRAM</code> the appender calls the C library through <code>java.lang.foreign</code>. That API is a preview
 API in Java 21 and final from Java 22; the appender uses it through reflection, so no <code>--enable-preview</code> flag
-is needed. The first use prints a one-time JDK warning:</p>
-<pre><code>WARNING: A restricted method in java.lang.foreign.Linker has been called
-WARNING: java.lang.foreign.Linker::downcallHandle has been called by the unnamed module
-WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for this module</code></pre>
-<p>Start the JVM with <code>--enable-native-access=ALL-UNNAMED</code> to allow native access and silence it.
+is needed. The first use makes the JDK print a one-time warning that a restricted method in
+<code>java.lang.foreign.Linker</code> was called (the exact wording differs between Java 21 and Java 24 and later).</p>
+<p>Start the JVM with <code>--enable-native-access=ALL-UNNAMED</code> to allow native access and silence it, or with
+<code>--enable-native-access=org.red5.syslog</code> when the jar is on the module path.
 <code>DATAGRAM</code> works on Linux and macOS (the macOS socket layout follows the system headers but is not tested
 here); Windows is not supported. Where it is unavailable the appender does not start and says why; use
 <code>STREAM</code>, or UDP or TCP to <code>127.0.0.1</code>. <code>STREAM</code> uses the JDK's own unix socket support

@@ -34,7 +34,9 @@ on up to <code>LOCAL7</code> at 23).</p>
 
 <h2>RFC 3164 (default)</h2>
 <p>The frame is <code>&lt;PRI&gt;TIMESTAMP HOST TAG: MESSAGE</code>. The timestamp and host name are included unless
-you set <code>sendLocalTimestamp</code> or <code>sendLocalName</code> to false, and <code>appName</code> supplies the tag.</p>
+you set <code>sendLocalTimestamp</code> or <code>sendLocalName</code> to false, and <code>appName</code> supplies the tag.
+For protocol <code>UNIX</code> the host name is omitted by default (<code>sendLocalName</code> defaults to false there),
+giving <code>&lt;PRI&gt;TIMESTAMP TAG: MESSAGE</code> as glibc's <code>syslog()</code> writes to the local socket.</p>
 <pre><code>&lt;134&gt;Oct  1 09:17:11 red5host red5: [main] org.red5.server.Demo stream started</code></pre>
 
 <h2>RFC 5424</h2>
@@ -86,7 +88,9 @@ depends on the format:</p>
 <tr><td>RFC 5424</td><td>The message is truncated to fit (RFC 5424 section 6.1), at a UTF-8 character boundary. Splitting would repeat the header fields in the middle of a message, so it is not done.</td></tr>
 </table>
 
-<p>For UDP the limit cannot exceed 65507 bytes, the largest datagram; a larger value is lowered with a warning.
+<p>For UDP and for unix datagram sockets (<code>UNIX</code> with <code>unixSocketType</code> <code>DATAGRAM</code>)
+the limit cannot exceed 65507 bytes, the largest UDP datagram; a larger value is lowered with a warning, so an
+oversized datagram can never block the backlog.
 Receivers often have limits of their own, commonly 1024 to 8192 bytes, so a value above what your collector
 accepts only moves the truncation to the other side.</p>
 
