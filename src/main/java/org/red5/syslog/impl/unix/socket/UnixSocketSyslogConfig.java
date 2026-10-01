@@ -4,8 +4,14 @@ import org.red5.syslog.SyslogRuntimeException;
 import org.red5.syslog.impl.AbstractSyslogConfig;
 
 /**
-* UnixSocketSyslogConfig is an extension of AbstractNetSyslogConfig that provides
-* configuration support for Unix socket-based syslog clients.
+* UnixSocketSyslogConfig is an extension of AbstractSyslogConfig that provides
+* configuration support for Unix socket-based syslog clients ({@link UnixSocketSyslog}).
+* 
+* <p>Settings: the socket path (default /dev/log) and the socket type, SOCK_DGRAM
+* (the default; what /dev/log and macOS /var/run/syslog are, needs java.lang.foreign
+* on Linux or macOS/BSD, see {@link UnixDatagramSocket}) or SOCK_STREAM (for stream
+* listeners such as syslog-ng unix-stream). Family and protocol are retained for
+* configuration compatibility; the socket is always AF_UNIX with protocol 0.</p>
 * 
 * <p>Syslog4j is licensed under the Lesser GNU Public License v2.1.  A copy
 * of the LGPL license is available in the META-INF folder in all
@@ -69,10 +75,12 @@ public class UnixSocketSyslogConfig extends AbstractSyslogConfig {
 		this.path = path;
 	}
 	
+	/** @return SOCK_DGRAM (2, the default) or SOCK_STREAM (1) */
 	public int getType() {
 		return this.type;
 	}
 	
+	/** @param type SOCK_DGRAM (2, the default: one datagram per message) or SOCK_STREAM (1: newline-terminated messages on a stream connection) */
 	public void setType(int type) {
 		this.type = type;
 	}

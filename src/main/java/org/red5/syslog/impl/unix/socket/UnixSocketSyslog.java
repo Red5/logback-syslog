@@ -8,16 +8,28 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 
 import org.red5.syslog.AbortableSyslog;
+import org.red5.syslog.SyslogConstants;
 import org.red5.syslog.SyslogRuntimeException;
 import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogWriter;
 
 /**
- * Syslog over a unix domain socket (default path /dev/log). Uses JDK 16+ native support, no JNA.
+ * Syslog over a unix domain socket (default path /dev/log), without JNA. Two socket types are supported, chosen by
+ * {@link UnixSocketSyslogConfig#setType(int)}:
  *
- * <p>Limitation: only stream sockets are supported (the JDK has no unix datagram channel), so this
- * works with stream listeners (syslog-ng unix-stream, rsyslog stream input and similar) but not with
- * datagram-only /dev/log. Each message is written newline-terminated.</p>
+ * <ul>
+ * <li>{@code SOCK_DGRAM} (the default): one datagram per message, no framing, through {@link UnixDatagramSocket}. This
+ * is what /dev/log (journald, rsyslog) and /var/run/syslog (macOS) expect. It needs {@code java.lang.foreign} (used
+ * reflectively; a preview API in JDK 21, final from JDK 22) on Linux or macOS/BSD; Windows is unsupported. If it is not
+ * available {@link #initialize()} fails with a message naming the reason and the alternatives. Sends never block: a
+ * full receiver buffer is a failed write.</li>
+ * <li>{@code SOCK_STREAM}: a JDK {@link SocketChannel}, each message written newline-terminated, for stream listeners
+ * (syslog-ng unix-stream, rsyslog stream input and similar).</li>
+ * </ul>
+ *
+ * <p>The socket is connected lazily on the first write and again after any failure; a failed write throws a
+ * SyslogRuntimeException wrapping the IOException, which sends the message to the backlog handlers.
+ * {@link #flush()} and {@link #shutdown()} close it.</p>
  *
  * <p>Syslog4j is licensed under the Lesser GNU Public License v2.1.  A copy
  * of the LGPL license is available in the META-INF folder in all
@@ -26,10 +38,10 @@ import org.red5.syslog.impl.AbstractSyslogWriter;
 public class UnixSocketSyslog extends AbstractSyslog implements AbortableSyslog {
 
     private static final long serialVersionUID = 1L;
-    private static final int SOCK_STREAM = 1;
 
     protected UnixSocketSyslogConfig unixConfig;
     private transient volatile WritableByteChannel channel;
+    private transient volatile UnixDatagramSocket datagram;
     private transient volatile boolean aborted;
 
     @Override
@@ -43,9 +55,20 @@ public class UnixSocketSyslog extends AbstractSyslog implements AbortableSyslog 
     }
 
     private void checkType() {
-        if (unixConfig.getType() != SOCK_STREAM) {
-            throw new SyslogRuntimeException("unix datagram sockets are not supported on JDK 21; use a stream socket");
+        int type = unixConfig.getType();
+        if (type == SyslogConstants.SOCK_DGRAM) {
+            if (!UnixDatagramSocket.isAvailable()) {
+                throw new SyslogRuntimeException(unavailableMessage(UnixDatagramSocket.unavailableReason()));
+            }
+        } else if (type != SyslogConstants.SOCK_STREAM) {
+            throw new SyslogRuntimeException("unsupported unix socket type " + type + "; use SOCK_DGRAM (" + SyslogConstants.SOCK_DGRAM
+                    + ") or SOCK_STREAM (" + SyslogConstants.SOCK_STREAM + ")");
         }
+    }
+
+    /** The error text used when the datagram type is selected but not available. */
+    private static String unavailableMessage(String reason) {
+        return "unix datagram sockets are unavailable: " + reason + "; use the STREAM socket type, or UDP/TCP to 127.0.0.1";
     }
 
     private synchronized WritableByteChannel channel() throws IOException {
@@ -63,10 +86,31 @@ public class UnixSocketSyslog extends AbstractSyslog implements AbortableSyslog 
         return channel;
     }
 
+    private synchronized UnixDatagramSocket datagram() throws IOException {
+        if (aborted) {
+            throw new IOException("transport aborted");
+        }
+        UnixDatagramSocket d = datagram;
+        if (d == null) {
+            d = UnixDatagramSocket.open(unixConfig.getPath());
+            datagram = d;
+            if (aborted) {
+                closeQuietly();
+                throw new IOException("transport aborted");
+            }
+        }
+        return d;
+    }
+
     @Override
     protected synchronized void write(int level, byte[] message) throws SyslogRuntimeException {
         try {
             checkType();
+            if (unixConfig.getType() == SyslogConstants.SOCK_DGRAM) {
+                // one datagram per message, exactly the message bytes
+                datagram().send(message, 0, message.length);
+                return;
+            }
             byte[] framed = new byte[message.length + 1];
             System.arraycopy(message, 0, framed, 0, message.length);
             framed[message.length] = '\n';
@@ -81,7 +125,7 @@ public class UnixSocketSyslog extends AbstractSyslog implements AbortableSyslog 
         }
     }
 
-    /** Closes the channel without taking the monitor held by a blocked write, and refuses new connections. */
+    /** Closes the channel or socket without taking the monitor held by a blocked write, and refuses new connections. */
     @Override
     public void abort() {
         aborted = true;
@@ -98,6 +142,11 @@ public class UnixSocketSyslog extends AbstractSyslog implements AbortableSyslog 
             // nothing to do
         }
         channel = null;
+        UnixDatagramSocket d = datagram;
+        if (d != null) {
+            d.close();
+        }
+        datagram = null;
     }
 
     @Override
