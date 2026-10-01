@@ -1,5 +1,11 @@
 package org.red5.logback.syslog;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.PatternLayout;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -34,6 +40,8 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private String sslKeyStore, sslKeyStorePassword, sslTrustStore, sslTrustStorePassword;
     private boolean sync = true;
 
+    private static final AtomicLong COUNTER = new AtomicLong();
+
     private PatternLayout layout;
     private PatternLayout stackTraceLayout;
     private SyslogIF syslog;
@@ -41,10 +49,18 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
 
     @Override
     public void start() {
+        if (isStarted()) {
+            return;
+        }
         try {
+            String problem = validate();
+            if (problem != null) {
+                addError("syslog appender [" + getName() + "] not started: " + problem);
+                return;
+            }
             SyslogFacility fac = SyslogFacility.parse(facility);
-            layout = layout(suffixPattern + "%nopex"); // suppress logback implicit throwable; stack is sent separately
-            stackTraceLayout = layout(stackTracePattern);
+            layout = layout(suffixPattern);
+            stackTraceLayout = throwableExcluded ? null : layout(stackTracePattern);
             AbstractSyslogConfig cfg = newConfig();
             cfg.setFacility(fac.code());
             cfg.setThreaded(false);               // queueing is done by this appender
@@ -52,16 +68,88 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             cfg.setSendLocalTimestamp(sendLocalTimestamp);
             cfg.setMaxMessageLength(maxMessageLength);
             cfg.setUseStructuredData(rfc5424);
-            if (appName != null) {
+            if (appName != null && !appName.isEmpty()) {
                 cfg.setIdent(appName);
             }
-            instanceName = "red5-" + (getName() != null ? getName() : Integer.toHexString(System.identityHashCode(this)));
+            // the Syslog registry is JVM-static and case-insensitive, so the name must be unique per appender
+            instanceName = "red5-" + (getName() != null ? getName() + "-" : "") + COUNTER.incrementAndGet();
             syslog = Syslog.createInstance(instanceName, cfg);
         } catch (RuntimeException e) {
             addError("syslog appender [" + getName() + "] not started: " + e.getMessage(), e);
+            instanceName = null;
+            stopLayouts();
             return;
         }
         super.start();
+    }
+
+    private String validate() {
+        if (protocol == null) {
+            return "protocol is null";
+        }
+        if (suffixPattern == null || suffixPattern.isEmpty()) {
+            return "suffixPattern must not be empty";
+        }
+        if (!throwableExcluded && (stackTracePattern == null || stackTracePattern.isEmpty())) {
+            return "stackTracePattern must not be empty unless throwableExcluded is true";
+        }
+        if (maxMessageLength <= 0) {
+            return "maxMessageLength must be positive: " + maxMessageLength;
+        }
+        if (protocol != Protocol.UNIX) {
+            if (syslogHost == null || syslogHost.isEmpty()) {
+                return "syslogHost must not be empty";
+            }
+            if (port < 1 || port > 65535) {
+                return "port out of range 1..65535: " + port;
+            }
+        }
+        if (protocol == Protocol.TLS && isEmpty(sslTrustStore) && isEmpty(sslKeyStore)) {
+            return "TLS requires sslTrustStore and/or sslKeyStore";
+        }
+        return null;
+    }
+
+    private static boolean isEmpty(String v) {
+        return v == null || v.isEmpty();
+    }
+
+    private void stopLayouts() {
+        if (layout != null) {
+            layout.stop();
+            layout = null;
+        }
+        if (stackTraceLayout != null) {
+            stackTraceLayout.stop();
+            stackTraceLayout = null;
+        }
+    }
+
+    /** Splits layout output into individual syslog messages: one per line, blank lines skipped. */
+    static List<String> splitLines(String text) {
+        List<String> out = new ArrayList<>();
+        if (text != null) {
+            for (String line : text.split("\\R")) {
+                if (!line.isBlank()) {
+                    out.add(line);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** View of an event that reports no throwable, so the message layout can never print one. */
+    static ILoggingEvent withoutThrowable(ILoggingEvent event) {
+        return (ILoggingEvent) Proxy.newProxyInstance(ILoggingEvent.class.getClassLoader(), new Class<?>[] { ILoggingEvent.class }, (proxy, method, args) -> {
+            if ("getThrowableProxy".equals(method.getName()) && method.getParameterCount() == 0) {
+                return null;
+            }
+            try {
+                return method.invoke(event, args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
     }
 
     private PatternLayout layout(String pattern) {
@@ -114,16 +202,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     protected void send(ILoggingEvent event) {
         try {
             int level = toSyslogLevel(event.getLevel()).code();
-            for (String line : layout.doLayout(event).split("\\R")) {
-                if (!line.isBlank()) {
-                    syslog.log(level, line);
-                }
+            for (String line : splitLines(layout.doLayout(withoutThrowable(event)))) {
+                syslog.log(level, line);
             }
             if (!throwableExcluded && event.getThrowableProxy() != null) {
-                for (String line : stackTraceLayout.doLayout(event).split("\\R")) {
-                    if (!line.isBlank()) {
-                        syslog.log(level, line);
-                    }
+                for (String line : splitLines(stackTraceLayout.doLayout(event))) {
+                    syslog.log(level, line);
                 }
             }
         } catch (RuntimeException e) {
@@ -143,6 +227,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     @Override
     public void stop() {
         super.stop();
+        stopLayouts();
         if (instanceName != null) {
             String name = instanceName;
             instanceName = null;
