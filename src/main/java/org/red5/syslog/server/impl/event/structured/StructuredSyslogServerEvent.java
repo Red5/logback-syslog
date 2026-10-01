@@ -1,10 +1,12 @@
 package org.red5.syslog.server.impl.event.structured;
 
 import java.net.InetAddress;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
+import java.util.Date;
 
-import org.joda.time.DateTime;
-import org.joda.time.format.DateTimeFormatter;
-import org.joda.time.format.ISODateTimeFormat;
 import org.red5.syslog.SyslogConstants;
 import org.red5.syslog.impl.message.structured.StructuredSyslogMessage;
 import org.red5.syslog.server.impl.event.SyslogServerEvent;
@@ -32,7 +34,7 @@ public class StructuredSyslogServerEvent extends SyslogServerEvent {
 
 	protected String applicationName = SyslogConstants.STRUCTURED_DATA_APP_NAME_DEFAULT_VALUE;
 	protected String processId = null;
-	protected DateTime dateTime = null;
+	protected OffsetDateTime dateTime = null;
 	protected DateTimeFormatter dateTimeFormatter = null;
 	
 	public StructuredSyslogServerEvent(final byte[] message, int length, InetAddress inetAddress) {
@@ -51,7 +53,7 @@ public class StructuredSyslogServerEvent extends SyslogServerEvent {
 
 	public DateTimeFormatter getDateTimeFormatter() {
 		if (dateTimeFormatter == null) {
-			this.dateTimeFormatter = ISODateTimeFormat.dateTime();
+			this.dateTimeFormatter = new DateTimeFormatterBuilder().appendPattern("yyyy-MM-dd'T'HH:mm:ss").appendFraction(ChronoField.NANO_OF_SECOND, 3, 9, true).appendOffset("+HH:MM", "Z").toFormatter();
 		}
 		
 		return dateTimeFormatter;
@@ -102,8 +104,8 @@ public class StructuredSyslogServerEvent extends SyslogServerEvent {
 			try {
 				DateTimeFormatter formatter = getDateTimeFormatter();
 				
-				this.dateTime = formatter.parseDateTime(dateString);
-				this.date = this.dateTime.toDate();
+				this.dateTime = OffsetDateTime.parse(dateString, formatter);
+				this.date = Date.from(this.dateTime.toInstant());
 				
 				this.message = this.message.substring(dateString.length() + 1);
 				
@@ -133,7 +135,7 @@ public class StructuredSyslogServerEvent extends SyslogServerEvent {
 		return this.processId;
 	}
 	
-	public DateTime getDateTime() {
+	public OffsetDateTime getDateTime() {
 		return this.dateTime;
 	}
 

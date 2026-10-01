@@ -1,7 +1,10 @@
 package org.red5.syslog.impl.message.processor.structured;
 
-import org.joda.time.format.DateTimeFormatter;
-import org.joda.time.format.ISODateTimeFormat;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
+
 import org.red5.syslog.impl.message.processor.AbstractSyslogMessageProcessor;
 import org.red5.syslog.impl.message.structured.StructuredSyslogMessage;
 
@@ -39,7 +42,7 @@ public class StructuredSyslogMessageProcessor extends AbstractSyslogMessageProce
 	private String applicationName = STRUCTURED_DATA_APP_NAME_DEFAULT_VALUE;
 	private String processId = STRUCTURED_DATA_PROCESS_ID_DEFAULT_VALUE;
 	
-	private DateTimeFormatter dateTimeFormatter = ISODateTimeFormat.dateTime();
+	private DateTimeFormatter dateTimeFormatter = new DateTimeFormatterBuilder().appendPattern("yyyy-MM-dd'T'HH:mm:ss").appendFraction(ChronoField.NANO_OF_SECOND, 3, 9, true).appendOffset("+HH:MM", "Z").toFormatter();
 
 	public static void setDefault(StructuredSyslogMessageProcessor messageProcessor) {
 		if (messageProcessor != null) {
@@ -91,7 +94,7 @@ public class StructuredSyslogMessageProcessor extends AbstractSyslogMessageProce
 		buffer.append(VERSION);
 		buffer.append(' ');
 
-		getDateTimeFormatter().printTo(buffer,System.currentTimeMillis());
+		getDateTimeFormatter().formatTo(OffsetDateTime.now(),buffer);
 		buffer.append(' ');
 
 		appendLocalName(buffer,localName);
