@@ -230,6 +230,14 @@ public abstract class AbstractSyslog implements SyslogIF {
 	}
 
 	/**
+	 * Same as {@link #logToBackLog(int, String)} for a message object (e.g. a structured message), which is serialized as
+	 * {@link #log(int, SyslogMessageIF)} would, without being wrapped a second time.
+	 */
+	public void logToBackLog(int level, SyslogMessageIF message) {
+		logProcessed(getMessageProcessor(),level,message.createMessage(),true);
+	}
+
+	/**
 	 * Writes a message that was already prepared (ident prefix, modifiers, structured wrapping) when it was handed to a
 	 * backLog handler; re-running {@link #log(int, String)} on it would prefix and wrap it a second time.
 	 */

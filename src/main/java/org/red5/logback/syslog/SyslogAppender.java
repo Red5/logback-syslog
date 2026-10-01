@@ -3,7 +3,12 @@ package org.red5.logback.syslog;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -18,9 +23,13 @@ import org.red5.syslog.Syslog;
 import org.red5.syslog.SyslogFacility;
 import org.red5.syslog.SyslogIF;
 import org.red5.syslog.SyslogLevel;
+import org.red5.syslog.SyslogMessageIF;
+import org.red5.syslog.SyslogMessageModifierIF;
 import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogConfig;
 import org.red5.syslog.impl.backlog.RingBufferBackLogHandler;
+import org.red5.syslog.impl.message.processor.structured.StructuredSyslogMessageProcessor;
+import org.red5.syslog.impl.message.structured.StructuredSyslogMessage;
 import org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig;
 import org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig;
 import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
@@ -49,6 +58,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private long shutdownTimeoutMs = 2000;
     private int backlogSize = 1000;
 
+    private final List<SyslogMessageModifierIF> modifiers = new ArrayList<>();
+    private final List<StructuredDataParam> structuredData = new ArrayList<>();
+    private volatile Map<String, Map<String, String>> structuredDataMap;   // built at start; null when none configured
+    private volatile List<SyslogMessageModifierIF> activeModifiers = List.of();
+
+    private static final int UDP_MAX_PAYLOAD = 65507;
     private static final AtomicLong COUNTER = new AtomicLong();
 
     private PatternLayout layout;
@@ -56,6 +71,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private SyslogIF syslog;
     private RingBufferBackLogHandler backlog;
     private String instanceName;
+    private volatile int facilityCode;
 
     /** State of one start/stop cycle; an old writer only ever sees its own generation, so a restart cannot revive it. */
     private static final class Generation {
@@ -92,14 +108,31 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             layout = layout(suffixPattern);
             stackTraceLayout = throwableExcluded ? null : layout(stackTracePattern);
             AbstractSyslogConfig cfg = newConfig();
+            facilityCode = fac.code();
             cfg.setFacility(fac.code());
             cfg.setThreaded(false);               // queueing is done by this appender
             cfg.setSendLocalName(sendLocalName);
             cfg.setSendLocalTimestamp(sendLocalTimestamp);
-            cfg.setMaxMessageLength(maxMessageLength);
+            // a UDP datagram carries at most 65507 bytes: a larger limit would make an oversized datagram fail on send, and the
+            // failed line would then sit at the head of the backlog and block every later line; capped, the ported splitter
+            // breaks long messages into several datagrams instead
+            cfg.setMaxMessageLength(protocol == Protocol.UDP ? Math.min(maxMessageLength, UDP_MAX_PAYLOAD) : maxMessageLength);
             cfg.setUseStructuredData(rfc5424);
-            if (appName != null && !appName.isEmpty()) {
-                cfg.setIdent(appName);
+            if (rfc5424) {
+                // RFC 5424 carries the application name in the header (APP-NAME) and the modifiers act on the MSG text
+                // only; the ported ident prefix and cfg-level modifiers would land in MSGID and corrupt the frame.
+                activeModifiers = List.copyOf(modifiers);
+                structuredDataMap = buildStructuredDataMap();
+            } else {
+                activeModifiers = List.of();
+                structuredDataMap = null;
+                if (!structuredData.isEmpty()) {
+                    addWarn("syslog appender [" + getName() + "]: structuredData is ignored unless rfc5424 is true");
+                }
+                if (appName != null && !appName.isEmpty()) {
+                    cfg.setIdent(appName);
+                }
+                modifiers.forEach(cfg::addMessageModifier);
             }
             cfg.setThrowExceptionOnWrite(false);  // failures go to the backlog handlers, never into the logging path
             backlog = null;
@@ -112,6 +145,10 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             // the Syslog registry is JVM-static and case-insensitive, so the name must be unique per appender
             instanceName = "red5-" + (getName() != null ? getName() + "-" : "") + COUNTER.incrementAndGet();
             syslog = Syslog.createInstance(instanceName, cfg);
+            if (rfc5424 && syslog instanceof AbstractSyslog as) {
+                // per instance: the ported default processor is JVM-wide and would leak one appender's APP-NAME to all
+                as.setStructuredMessageProcessor(new StructuredSyslogMessageProcessor(isEmpty(appName) ? null : appName));
+            }
         } catch (RuntimeException e) {
             addError("syslog appender [" + getName() + "] not started: " + e.getMessage(), e);
             instanceName = null;
@@ -160,7 +197,62 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         if (protocol == Protocol.TLS && isEmpty(sslTrustStore) && isEmpty(sslKeyStore)) {
             return "TLS requires sslTrustStore and/or sslKeyStore";
         }
+        if (rfc5424) {
+            if (!isEmpty(appName) && !isSdName(appName, 48)) {
+                return "appName must be 1..48 printable ASCII characters without spaces for rfc5424: " + appName;
+            }
+            Set<String> ids = new HashSet<>();
+            for (StructuredDataParam sd : structuredData) {
+                String id = sd.getId();
+                if (isEmpty(id) || id.isBlank()) {
+                    return "structuredData id must not be blank";
+                }
+                if (!isSdName(id, 32)) {
+                    return "structuredData id must be 1..32 printable ASCII characters without space, '=', ']' or '\"': " + id;
+                }
+                if (!ids.add(id)) {
+                    return "duplicate structuredData id: " + id;
+                }
+                for (Map.Entry<String, String> p : sd.getParams().entrySet()) {
+                    if (p.getKey() == null || p.getKey().isBlank()) {
+                        return "structuredData [" + id + "] has a param with a blank name";
+                    }
+                    if (!isSdName(p.getKey(), 32)) {
+                        return "structuredData [" + id + "] param name must be 1..32 printable ASCII characters without space, '=', ']' or '\"': " + p.getKey();
+                    }
+                    if (p.getValue() == null) {
+                        return "structuredData [" + id + "] param [" + p.getKey() + "] has no value";
+                    }
+                }
+            }
+        }
         return null;
+    }
+
+    /** RFC 5424 SD-NAME / APP-NAME shape: printable US-ASCII (33..126), at most maxLen, and for names also no '=', ']' or '"'. */
+    private static boolean isSdName(String v, int maxLen) {
+        if (v.isEmpty() || v.length() > maxLen) {
+            return false;
+        }
+        boolean strict = maxLen == 32;
+        for (int i = 0; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (c < 33 || c > 126 || (strict && (c == '=' || c == ']' || c == '"'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Map<String, Map<String, String>> buildStructuredDataMap() {
+        if (structuredData.isEmpty()) {
+            return null;
+        }
+        Map<String, Map<String, String>> m = new LinkedHashMap<>();
+        for (StructuredDataParam sd : structuredData) {
+            m.put(sd.getId(), Collections.unmodifiableMap(new LinkedHashMap<>(sd.getParams())));
+        }
+        return Collections.unmodifiableMap(m);
     }
 
     private static boolean isEmpty(String v) {
@@ -368,14 +460,30 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
      * another connect attempt.
      */
     private void emit(SyslogIF out, int level, String line) {
+        SyslogMessageIF structured = null;
+        if (rfc5424) {
+            String text = line;
+            for (SyslogMessageModifierIF m : activeModifiers) {
+                text = m.modify(out, facilityCode, level, text);
+            }
+            structured = new StructuredSyslogMessage(null, structuredDataMap, text);
+        }
         RingBufferBackLogHandler h = backlog;
         if (h != null && out instanceof AbstractSyslog as && h.size() > 0) {
             if (!h.replay(as::logPrepared)) {
-                as.logToBackLog(level, line);
+                if (structured != null) {
+                    as.logToBackLog(level, structured);
+                } else {
+                    as.logToBackLog(level, line);
+                }
                 return;
             }
         }
-        out.log(level, line);
+        if (structured != null) {
+            out.log(level, structured);
+        } else {
+            out.log(level, line);
+        }
     }
 
     /** The underlying syslog instance of the current start, or null; for tests. */
@@ -479,6 +587,19 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     }
 
     // ---- bean setters used by Joran -----------------------------------------------------
+
+    /**
+     * Adds a message modifier, nested in XML as {@code <modifier class="..."/>}. With rfc5424 the modifiers act on the
+     * MSG text only. Joran instantiates the class through a public no-argument constructor and sets its properties
+     * through setters, so only modifiers that are configurable that way work from XML: PrefixSyslogMessageModifier
+     * (property prefix), SuffixSyslogMessageModifier (property suffix) and HTMLEntityEscapeSyslogMessageModifier.
+     * StringCase, Checksum, Hash, Mac and Sequential modifiers need constructor arguments or a config object and can
+     * only be added programmatically.
+     */
+    public void addModifier(SyslogMessageModifierIF m) { modifiers.add(m); }
+
+    /** Adds an RFC 5424 structured data element, nested in XML as {@code <structuredData><id>..</id><entry>..</entry></structuredData>} (see {@link StructuredDataParam}); used only when rfc5424 is true. */
+    public void addStructuredData(StructuredDataParam sd) { structuredData.add(sd); }
     public void setSyslogHost(String v) { this.syslogHost = v; }
     public void setPort(int v) { this.port = v; }
     public void setProtocol(Protocol v) { this.protocol = v; }

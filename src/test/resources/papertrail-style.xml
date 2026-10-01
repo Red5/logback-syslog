@@ -1,0 +1,14 @@
+<configuration>
+  <appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender">
+    <syslogHost>127.0.0.1</syslogHost>
+    <port>15170</port>
+    <facility>LOCAL0</facility>
+    <suffixPattern>[%thread] %logger %msg</suffixPattern>
+    <stackTracePattern>%ex</stackTracePattern>
+    <throwableExcluded>false</throwableExcluded>
+    <sendLocalName>true</sendLocalName>
+    <sendLocalTimestamp>true</sendLocalTimestamp>
+    <maxMessageLength>128000</maxMessageLength>
+  </appender>
+  <root level="INFO"><appender-ref ref="SYSLOG"/></root>
+</configuration>

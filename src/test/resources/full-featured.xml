@@ -1,0 +1,16 @@
+<configuration>
+  <appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender">
+    <syslogHost>127.0.0.1</syslogHost>
+    <port>15171</port>
+    <protocol>TCP</protocol>
+    <facility>LOCAL0</facility>
+    <suffixPattern>[%thread] %logger %msg</suffixPattern>
+    <rfc5424>true</rfc5424>
+    <appName>red5</appName>
+    <queueSize>100</queueSize>
+    <modifier class="org.red5.syslog.impl.message.modifier.text.PrefixSyslogMessageModifier">
+      <prefix>[r5]</prefix>
+    </modifier>
+  </appender>
+  <root level="INFO"><appender-ref ref="SYSLOG"/></root>
+</configuration>

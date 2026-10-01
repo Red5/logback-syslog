@@ -1,0 +1,20 @@
+<configuration>
+  <appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender">
+    <syslogHost>127.0.0.1</syslogHost>
+    <port>15172</port>
+    <protocol>TCP</protocol>
+    <suffixPattern>%msg</suffixPattern>
+    <rfc5424>true</rfc5424>
+    <appName>red5</appName>
+    <structuredData>
+      <id>meta@1234</id>
+      <entry><name>k</name><value>v</value></entry>
+      <entry><name>tricky</name><value>a&quot;b\c]d</value></entry>
+    </structuredData>
+    <structuredData>
+      <id>origin@1234</id>
+      <entry><name>ip</name><value>10.0.0.1</value></entry>
+    </structuredData>
+  </appender>
+  <root level="INFO"><appender-ref ref="SYSLOG"/></root>
+</configuration>
