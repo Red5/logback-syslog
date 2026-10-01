@@ -3,11 +3,14 @@ package org.red5.logback.syslog;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -31,7 +34,7 @@ class SyslogAppenderAsyncTest {
     static class GatedAppender extends SyslogAppender {
         final CountDownLatch gate = new CountDownLatch(1);
         final AtomicInteger delivered = new AtomicInteger();
-        final List<String> messages = java.util.Collections.synchronizedList(new ArrayList<>());
+        final List<String> messages = Collections.synchronizedList(new ArrayList<>());
         volatile String failOn;
 
         @Override
@@ -353,9 +356,9 @@ class SyslogAppenderAsyncTest {
         try (Socket probe = new Socket()) {
             probe.connect(new InetSocketAddress("10.255.255.1", 9), 300);
             blackHole = false;
-        } catch (java.net.SocketTimeoutException e) {
+        } catch (SocketTimeoutException e) {
             blackHole = true;
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             blackHole = false; // immediate unreachable: environment cannot stall a connect
         }
         assumeTrue(blackHole, "10.255.255.1 is not a black hole here");

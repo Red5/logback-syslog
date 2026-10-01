@@ -70,6 +70,15 @@ class SyslogAppenderTest {
         assertNull(v.getThrowableProxy());
         assertEquals("m", v.getMessage());
         assertEquals(Level.ERROR, v.getLevel());
+        // converters that cast to LoggingEvent must keep working
+        assertInstanceOf(LoggingEvent.class, v);
+        assertEquals(e.getFormattedMessage(), v.getFormattedMessage());
+        assertEquals(e.getThreadName(), v.getThreadName());
+        assertEquals(e.getLoggerName(), v.getLoggerName());
+        assertEquals(e.getTimeStamp(), v.getTimeStamp());
+        assertEquals(e.getInstant(), v.getInstant());
+        assertEquals(e.getSequenceNumber(), v.getSequenceNumber());
+        assertSame(e.getLoggerContextVO(), v.getLoggerContextVO());
     }
 
     @Test
@@ -315,6 +324,32 @@ class SyslogAppenderTest {
         rejects("empty host", a -> a.setSyslogHost(""));
         rejects("null protocol", a -> a.setProtocol(null));
         rejects("tls without stores", a -> a.setProtocol(Protocol.TLS));
+    }
+
+    @Test
+    void validationRejectsMissingUnixPathAndTooSmallMaxMessageLength() {
+        rejects("unix without path", a -> {
+            a.setProtocol(Protocol.UNIX);
+            a.setUnixSocketPath(null);
+        });
+        rejects("unix with empty path", a -> {
+            a.setProtocol(Protocol.UNIX);
+            a.setUnixSocketPath("");
+        });
+        rejects("maxMessageLength 127", a -> a.setMaxMessageLength(127));
+        LoggerContext ctx = new LoggerContext();
+        SyslogAppender a = appender(ctx, 15160);
+        a.setMaxMessageLength(100);
+        a.start();
+        assertFalse(a.isStarted());
+        assertTrue(ctx.getStatusManager().getCopyOfStatusList().stream()
+                .anyMatch(st -> st.getLevel() == Status.ERROR && st.getMessage().contains("at least 128")),
+                "the error names the floor");
+        SyslogAppender ok = appender(ctx, 15160);
+        ok.setMaxMessageLength(128);
+        ok.start();
+        assertTrue(ok.isStarted(), "128 is allowed");
+        ok.stop();
     }
 
     @Test

@@ -1,7 +1,6 @@
 package org.red5.logback.syslog;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Proxy;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -18,7 +17,13 @@ import java.util.function.LongSupplier;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.PatternLayout;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.IThrowableProxy;
+import ch.qos.logback.classic.spi.LoggerContextVO;
+import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.core.AppenderBase;
+
+import org.slf4j.Marker;
+import org.slf4j.event.KeyValuePair;
 
 import org.red5.syslog.AbortableSyslog;
 import org.red5.syslog.SyslogFacility;
@@ -38,7 +43,19 @@ import org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig;
 import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
 import org.red5.syslog.impl.unix.socket.UnixSocketSyslogConfig;
 
-/** Logback appender that ships events to syslog through org.red5.syslog. */
+/**
+ * Logback appender that ships events to syslog through org.red5.syslog.
+ *
+ * <p>By default events are queued and written by one platform daemon thread per appender ({@code sync=false}); the
+ * ported transports synchronize around blocking socket I/O, which would pin a virtual thread's carrier on JDK 21.
+ * While the destination is unreachable formatted messages wait in a bounded in-memory backlog ({@code backlogSize})
+ * and are replayed in order on recovery; reconnects back off from 1 s doubling to 30 s. An outage is reported as one
+ * ERROR status per rate-limit window, the recovery as an INFO status, and every message lost on the way is counted in
+ * {@link #getDroppedCount()}.</p>
+ *
+ * <p>Replayed messages carry the replay time, not the event time, in the syslog header timestamp. When the exact event
+ * time matters, put it in the message, e.g. {@code <suffixPattern>%d{ISO8601} [%thread] %logger %msg</suffixPattern>}.</p>
+ */
 public class SyslogAppender extends AppenderBase<ILoggingEvent> {
 
     private String syslogHost = "localhost";
@@ -68,6 +85,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private volatile List<SyslogMessageModifierIF> activeModifiers = List.of();
 
     private static final int UDP_MAX_PAYLOAD = 65507;
+    static final int MIN_MESSAGE_LENGTH = 128;
     private static final AtomicLong COUNTER = new AtomicLong();
 
     private PatternLayout layout;
@@ -283,10 +301,16 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         if (backlogSize < 0) {
             return "backlogSize must not be negative: " + backlogSize;
         }
-        if (effectiveMaxMessageLength() <= 0) {
-            return "maxMessageLength must be positive: " + maxMessageLength;
+        if (effectiveMaxMessageLength() < MIN_MESSAGE_LENGTH) {
+            // below this the header alone can exhaust the budget and every write fails ("Message length < 0"),
+            // leaving a poison entry at the head of the backlog
+            return "maxMessageLength must be at least " + MIN_MESSAGE_LENGTH + ": " + maxMessageLength;
         }
-        if (protocol != Protocol.UNIX) {
+        if (protocol == Protocol.UNIX) {
+            if (unixSocketPath == null || unixSocketPath.isBlank()) {
+                return "unixSocketPath must not be empty for protocol UNIX";
+            }
+        } else {
             if (syslogHost == null || syslogHost.isEmpty()) {
                 return "syslogHost must not be empty";
             }
@@ -393,16 +417,56 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
 
     /** View of an event that reports no throwable, so the message layout can never print one. */
     static ILoggingEvent withoutThrowable(ILoggingEvent event) {
-        return (ILoggingEvent) Proxy.newProxyInstance(ILoggingEvent.class.getClassLoader(), new Class<?>[] { ILoggingEvent.class }, (proxy, method, args) -> {
-            if ("getThrowableProxy".equals(method.getName()) && method.getParameterCount() == 0) {
-                return null;
+        return new ThrowableFreeEvent(event);
+    }
+
+    /**
+     * Read-only view of an event without its throwable. It extends LoggingEvent (rather than only implementing
+     * ILoggingEvent) so converters that cast to LoggingEvent keep working; every getter delegates to the wrapped event.
+     */
+    static final class ThrowableFreeEvent extends LoggingEvent {
+        private final ILoggingEvent e;
+
+        ThrowableFreeEvent(ILoggingEvent e) {
+            this.e = e;
+        }
+
+        @Override public IThrowableProxy getThrowableProxy() { return null; }
+        @Override public String getThreadName() { return e.getThreadName(); }
+        @Override public Level getLevel() { return e.getLevel(); }
+        @Override public String getMessage() { return e.getMessage(); }
+        @Override public Object[] getArgumentArray() { return e.getArgumentArray(); }
+        @Override public String getFormattedMessage() { return e.getFormattedMessage(); }
+        @Override public String getLoggerName() { return e.getLoggerName(); }
+        @Override public LoggerContextVO getLoggerContextVO() { return e.getLoggerContextVO(); }
+        @Override public StackTraceElement[] getCallerData() { return e.getCallerData(); }
+        @Override public boolean hasCallerData() { return e.hasCallerData(); }
+        @SuppressWarnings("deprecation")
+        @Override public Marker getMarker() { return e.getMarker(); }
+        @Override public List<Marker> getMarkerList() { return e.getMarkerList(); }
+        @Override public Map<String, String> getMDCPropertyMap() { return e.getMDCPropertyMap(); }
+        @SuppressWarnings("deprecation")
+        @Override public Map<String, String> getMdc() { return e.getMdc(); }
+        @Override public long getTimeStamp() { return e.getTimeStamp(); }
+        @Override public int getNanoseconds() { return e.getNanoseconds(); }
+        @Override public Instant getInstant() { return e.getInstant(); }
+        @Override public long getSequenceNumber() { return e.getSequenceNumber(); }
+        @Override public List<KeyValuePair> getKeyValuePairs() { return e.getKeyValuePairs(); }
+        @Override public void prepareForDeferredProcessing() { e.prepareForDeferredProcessing(); }
+
+        @Override
+        public long getContextBirthTime() {
+            if (e instanceof LoggingEvent le) {
+                return le.getContextBirthTime();
             }
-            try {
-                return method.invoke(event, args);
-            } catch (InvocationTargetException e) {
-                throw e.getCause();
-            }
-        });
+            LoggerContextVO vo = e.getLoggerContextVO();
+            return vo == null ? 0 : vo.getBirthTime();
+        }
+
+        @Override
+        public String toString() {
+            return e.toString();
+        }
     }
 
     private PatternLayout layout(String pattern) {
@@ -550,7 +614,17 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         }
     }
 
-    /** Number of events discarded because the queue was full or the appender was stopping. */
+    /**
+     * Number of events or messages lost: events discarded because the queue was full, the appender was stopping, or
+     * enqueueing or formatting failed; backlogged messages evicted to make room or still waiting when the appender
+     * stopped; and failed writes when the backlog is disabled. Delivered + dropped + still backlogged equals submitted
+     * (one message per event line).
+     * <p>
+     * In-flight semantics at abandonment: when stop() gives up waiting ({@code shutdownTimeoutMs}) the transport is
+     * aborted. The event the writer was writing at that moment may or may not have reached the server; it is counted
+     * only if its write fails into the backlog (a closed backlog counts it as dropped), possibly after the final stop
+     * warning was issued.
+     */
     public long getDroppedCount() {
         return dropped.get();
     }
@@ -580,6 +654,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 }
             }
         } catch (RuntimeException e) {
+            dropped.incrementAndGet();   // formatting failed: the rest of the event is lost
             reportFailure("syslog write failed: " + e.getMessage());
         }
     }
@@ -830,6 +905,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
      * Maximum size in bytes of one syslog message including its header. Default 1024, or 2048 when rfc5424 is true.
      * With rfc5424 an over-long message is truncated (RFC 5424 section 6.1) at a UTF-8 character boundary; otherwise
      * it is split into several messages. For UDP the limit is capped at 65507 (the datagram limit) with a warning.
+     * Must be at least 128: a smaller budget leaves no room for the message after the header.
      */
     public void setMaxMessageLength(int v) { this.maxMessageLength = v; this.maxMessageLengthSet = true; }
     public void setAppName(String v) { this.appName = v; }
@@ -858,8 +934,10 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setBlockWhenFull(boolean v) { this.blockWhenFull = v; }
     /**
      * Number of formatted messages kept in memory while the syslog server cannot be reached (default 1000, newest kept
-     * when full); they are replayed in order once a write succeeds again. 0 disables the backlog. Applies to the
-     * connection-oriented protocols (TCP, TLS, UNIX socket). A UDP send that throws an IOException is backlogged and
+     * when full); they are replayed in order once the destination answers again. 0 disables the backlog (failed writes
+     * are then counted as dropped). Evicted messages and those still waiting at stop() count as dropped. Replayed
+     * messages carry the replay time in the syslog header timestamp; use %d in suffixPattern when the exact event time
+     * matters. Applies to the connection-oriented protocols (TCP, TLS, UNIX socket). A UDP send that throws an IOException is backlogged and
      * replayed too, but UDP gives no delivery feedback, so an unreachable UDP listener usually means silent loss
      * rather than a backlog.
      */
