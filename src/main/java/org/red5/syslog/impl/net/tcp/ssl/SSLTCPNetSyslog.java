@@ -1,5 +1,7 @@
 package org.red5.syslog.impl.net.tcp.ssl;
 
+import javax.net.ssl.SSLContext;
+
 import org.red5.syslog.SyslogRuntimeException;
 import org.red5.syslog.impl.net.tcp.TCPNetSyslog;
 
@@ -17,33 +19,23 @@ import org.red5.syslog.impl.net.tcp.TCPNetSyslog;
 public class SSLTCPNetSyslog extends TCPNetSyslog {
 	private static final long serialVersionUID = 2766654802524487317L;
 
+	/** Private to this instance: built from the configured stores, never from or into javax.net.ssl.* system properties. */
+	protected transient volatile SSLContext sslContext = null;
+
 	public void initialize() throws SyslogRuntimeException {
 		super.initialize();
 		
 		SSLTCPNetSyslogConfigIF sslTcpNetSyslogConfig = (SSLTCPNetSyslogConfigIF) this.tcpNetSyslogConfig;
 		
-		String keyStore = sslTcpNetSyslogConfig.getKeyStore();
-		
-		if (keyStore != null && !"".equals(keyStore.trim())) {
-			System.setProperty("javax.net.ssl.keyStore",keyStore);
-		}
+		this.sslContext = SslContextFactory.create(
+			sslTcpNetSyslogConfig.getKeyStore(),sslTcpNetSyslogConfig.getKeyStorePassword(),
+			sslTcpNetSyslogConfig.getTrustStore(),sslTcpNetSyslogConfig.getTrustStorePassword());
+	}
 
-		String keyStorePassword = sslTcpNetSyslogConfig.getKeyStorePassword();
-		
-		if (keyStorePassword != null && !"".equals(keyStorePassword.trim())) {
-			System.setProperty("javax.net.ssl.keyStorePassword",keyStorePassword);
-		}
-
-		String trustStore = sslTcpNetSyslogConfig.getTrustStore();
-		
-		if (trustStore != null && !"".equals(trustStore.trim())) {
-			System.setProperty("javax.net.ssl.trustStore",trustStore);
-		}
-
-		String trustStorePassword = sslTcpNetSyslogConfig.getTrustStorePassword();
-		
-		if (trustStorePassword != null && !"".equals(trustStorePassword.trim())) {
-			System.setProperty("javax.net.ssl.trustStorePassword",trustStorePassword);
-		}
+	/**
+	 * @return the SSLContext of this instance
+	 */
+	public SSLContext getSSLContext() {
+		return this.sslContext;
 	}
 }

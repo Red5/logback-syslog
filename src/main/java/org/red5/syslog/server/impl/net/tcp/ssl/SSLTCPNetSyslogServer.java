@@ -3,9 +3,10 @@ package org.red5.syslog.server.impl.net.tcp.ssl;
 import java.io.IOException;
 
 import javax.net.ServerSocketFactory;
-import javax.net.ssl.SSLServerSocketFactory;
+import javax.net.ssl.SSLContext;
 
 import org.red5.syslog.SyslogRuntimeException;
+import org.red5.syslog.impl.net.tcp.ssl.SslContextFactory;
 import org.red5.syslog.server.impl.net.tcp.TCPNetSyslogServer;
 
 /**
@@ -20,39 +21,20 @@ import org.red5.syslog.server.impl.net.tcp.TCPNetSyslogServer;
 * @version $Id: SSLTCPNetSyslogServer.java,v 1.1 2009/03/29 17:38:58 cvs Exp $
 */
 public class SSLTCPNetSyslogServer extends TCPNetSyslogServer {
+	/** Private to this server: built from the configured stores, never from or into javax.net.ssl.* system properties. */
+	protected volatile SSLContext sslContext = null;
+
 	public void initialize() throws SyslogRuntimeException {
 		super.initialize();
 		
 		SSLTCPNetSyslogServerConfigIF sslTcpNetSyslogServerConfig = (SSLTCPNetSyslogServerConfigIF) this.tcpNetSyslogServerConfig;
 		
-		String keyStore = sslTcpNetSyslogServerConfig.getKeyStore();
-		
-		if (keyStore != null && !"".equals(keyStore.trim())) {
-			System.setProperty("javax.net.ssl.keyStore",keyStore);
-		}
-
-		String keyStorePassword = sslTcpNetSyslogServerConfig.getKeyStorePassword();
-		
-		if (keyStorePassword != null && !"".equals(keyStorePassword.trim())) {
-			System.setProperty("javax.net.ssl.keyStorePassword",keyStorePassword);
-		}
-
-		String trustStore = sslTcpNetSyslogServerConfig.getTrustStore();
-		
-		if (trustStore != null && !"".equals(trustStore.trim())) {
-			System.setProperty("javax.net.ssl.trustStore",trustStore);
-		}
-
-		String trustStorePassword = sslTcpNetSyslogServerConfig.getTrustStorePassword();
-		
-		if (trustStorePassword != null && !"".equals(trustStorePassword.trim())) {
-			System.setProperty("javax.net.ssl.trustStorePassword",trustStorePassword);
-		}
+		this.sslContext = SslContextFactory.create(
+			sslTcpNetSyslogServerConfig.getKeyStore(),sslTcpNetSyslogServerConfig.getKeyStorePassword(),
+			sslTcpNetSyslogServerConfig.getTrustStore(),sslTcpNetSyslogServerConfig.getTrustStorePassword());
 	}
 
 	protected ServerSocketFactory getServerSocketFactory() throws IOException {
-		ServerSocketFactory serverSocketFactory = SSLServerSocketFactory.getDefault();
-		
-		return serverSocketFactory;
+		return this.sslContext.getServerSocketFactory();
 	}
 }

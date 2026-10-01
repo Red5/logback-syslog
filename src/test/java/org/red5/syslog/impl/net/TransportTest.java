@@ -189,38 +189,15 @@ class TransportTest {
     }
 
     @Test
-    void tlsDelivers(@TempDir Path dir) throws Exception {
-        // The ported SSL client and server configure JVM-wide javax.net.ssl.* properties and cache the
-        // default SSLContext, so only one TLS keystore per surefire JVM works. Restore the properties
-        // afterwards so the deleted temp keystore is not left behind.
-        Map<String, String> saved = new HashMap<>();
-        for (String k : SSL_PROPS) {
-            saved.put(k, System.getProperty(k));
-        }
-        try {
-            runTls(dir);
-        } finally {
-            saved.forEach((k, v) -> {
-                if (v == null) {
-                    System.clearProperty(k);
-                } else {
-                    System.setProperty(k, v);
-                }
-            });
-        }
-    }
-
-    private void runTls(Path dir) throws Exception {
+    void tlsDeliversWithoutTouchingJvmWideSslProperties(@TempDir Path dir) throws Exception {
         Path ks = TestKeystore.create(dir, "changeit");
+        Map<String, String> before = sslProps();
         try (CapturingServer s = CapturingServer.start("ssl", 15144, cfg -> {
             SSLTCPNetSyslogServerConfigIF ssl = (SSLTCPNetSyslogServerConfigIF) cfg;
             ssl.setKeyStore(ks.toString());
             ssl.setKeyStorePassword("changeit");
-            // the JVM-wide default SSLContext is initialised once; the trust store must be set
-            // before the server socket factory is first used for the client to trust the cert
-            ssl.setTrustStore(ks.toString());
-            ssl.setTrustStorePassword("changeit");
         })) {
+            assertEquals(before, sslProps(), "the TLS server must not set javax.net.ssl.* properties");
             SSLTCPNetSyslogConfig c = new SSLTCPNetSyslogConfig();
             c.setHost("127.0.0.1");
             c.setPort(15144);
@@ -228,11 +205,21 @@ class TransportTest {
             c.setTrustStorePassword("changeit");
             SyslogIF log = Syslog.createInstance("t-tls", c);
             try {
+                assertEquals(before, sslProps(), "the TLS client must not set javax.net.ssl.* properties");
                 log.info("tls-ok");
                 assertTrue(must(s, 5000).contains("tls-ok"));
             } finally {
                 Syslog.destroyInstance("t-tls");
             }
         }
+        assertEquals(before, sslProps());
+    }
+
+    private static Map<String, String> sslProps() {
+        Map<String, String> m = new HashMap<>();
+        for (String k : SSL_PROPS) {
+            m.put(k, System.getProperty(k));
+        }
+        return m;
     }
 }

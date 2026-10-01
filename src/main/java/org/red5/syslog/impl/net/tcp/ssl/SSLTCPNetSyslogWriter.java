@@ -1,7 +1,6 @@
 package org.red5.syslog.impl.net.tcp.ssl;
 
 import javax.net.SocketFactory;
-import javax.net.ssl.SSLSocketFactory;
 
 import org.red5.syslog.impl.net.tcp.TCPNetSyslogWriter;
 
@@ -23,6 +22,6 @@ public class SSLTCPNetSyslogWriter extends TCPNetSyslogWriter {
 	private static final long serialVersionUID = 8944446235285662244L;
 
 	protected SocketFactory obtainSocketFactory() {
-		return SSLSocketFactory.getDefault();
+		return ((SSLTCPNetSyslog) this.tcpNetSyslog).getSSLContext().getSocketFactory();
 	}
 }
