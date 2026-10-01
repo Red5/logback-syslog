@@ -53,13 +53,25 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private SyslogIF syslog;
     private String instanceName;
 
-    private BlockingQueue<ILoggingEvent> queue;
-    private Thread writer;
+    /** State of one start/stop cycle; an old writer only ever sees its own generation, so a restart cannot revive it. */
+    private static final class Generation {
+        final BlockingQueue<ILoggingEvent> queue;
+        volatile boolean running = true;
+        volatile boolean abandoned;   // set when stop() gives up waiting; the writer must exit without sending more
+        Thread writer;
+
+        Generation(int capacity) {
+            this.queue = new ArrayBlockingQueue<>(capacity);
+        }
+    }
+
+    private volatile Generation gen;
     private final AtomicLong dropped = new AtomicLong();
+    private final AtomicLong droppedWhileStopping = new AtomicLong();
     private final AtomicLong lastDropReport = new AtomicLong();
-    private volatile boolean running;
+    private final AtomicLong lastFailureReport = new AtomicLong();
     private final Object stopLock = new Object();
-    private volatile boolean abandoned;   // set when stop() gives up waiting; the writer must exit without sending more
+    long dropReportIntervalMs = 10_000;   // package-private for tests
 
     @Override
     public void start() {
@@ -95,10 +107,10 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             return;
         }
         if (!sync) {
-            queue = new ArrayBlockingQueue<>(queueSize);
-            running = true;
-            abandoned = false;
-            writer = Thread.ofVirtual().name("red5-syslog-" + getName()).start(this::drain);
+            Generation g = new Generation(queueSize);
+            droppedWhileStopping.set(0);
+            gen = g;
+            g.writer = Thread.ofVirtual().name("red5-syslog-" + getName()).start(() -> drain(g));
         }
         super.start();
     }
@@ -225,53 +237,74 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             send(event);
             return;
         }
+        Generation g = gen;
         try {
             event.prepareForDeferredProcessing();
-            if (!running) {
-                dropped.incrementAndGet();
+            if (g == null || !g.running) {
+                dropWhileStopping();
                 return;
             }
             if (blockWhenFull) {
                 boolean queued = false;
-                while (running && !(queued = queue.offer(event, 100, TimeUnit.MILLISECONDS))) {
+                while (g.running && !(queued = g.queue.offer(event, 100, TimeUnit.MILLISECONDS))) {
                     // wait for room, but re-check running so stop() releases blocked producers
                 }
                 if (!queued) {
-                    dropped.incrementAndGet();
+                    dropWhileStopping();
                     return;
                 }
-            } else if (!queue.offer(event)) {
+            } else if (!g.queue.offer(event)) {
                 reportDrop();
                 return;
             }
-            // stop() may have begun after the running check above; take the event back so it is counted, not lost
-            if (!running && queue.remove(event)) {
-                dropped.incrementAndGet();
+            // stop() may have begun after the running check above; take the event back so it is counted, not lost.
+            // Every queued event ends up delivered (writer poll) XOR counted (this remove, or stop()'s drain).
+            if (!g.running && g.queue.remove(event)) {
+                dropWhileStopping();
             }
         } catch (InterruptedException e) {
             dropped.incrementAndGet();
             Thread.currentThread().interrupt();
         } catch (RuntimeException e) {
             dropped.incrementAndGet();
-            addError("syslog enqueue failed: " + e.getMessage());
+            reportFailure("syslog enqueue failed: " + e);
         }
+    }
+
+    private void dropWhileStopping() {
+        dropped.incrementAndGet();
+        droppedWhileStopping.incrementAndGet();
     }
 
     private void reportDrop() {
         long n = dropped.incrementAndGet();
         long now = System.currentTimeMillis();
         long last = lastDropReport.get();
-        if (now - last > 10_000 && lastDropReport.compareAndSet(last, now)) {
+        if (now - last > dropReportIntervalMs && lastDropReport.compareAndSet(last, now)) {
             addWarn("syslog queue full; " + n + " events dropped so far");
         }
     }
 
-    private void drain() {
+    /** Reports a per-event failure at most once per interval, so a persistent fault cannot flood the status list. */
+    private void reportFailure(String message) {
+        long now = System.currentTimeMillis();
+        long last = lastFailureReport.get();
+        if (now - last > dropReportIntervalMs && lastFailureReport.compareAndSet(last, now)) {
+            addError(message);
+        }
+    }
+
+    private void drain(Generation g) {
         try {
-            while (!abandoned && (running || !queue.isEmpty())) {
-                ILoggingEvent e = queue.poll(100, TimeUnit.MILLISECONDS);
+            while (!g.abandoned && (g.running || !g.queue.isEmpty())) {
+                ILoggingEvent e = g.queue.poll(100, TimeUnit.MILLISECONDS);
                 if (e != null) {
-                    send(e);
+                    try {
+                        send(e);
+                    } catch (Throwable t) {
+                        dropped.incrementAndGet();
+                        reportFailure("syslog writer failed: " + t);
+                    }
                 }
             }
         } catch (InterruptedException ignored) {
@@ -286,10 +319,11 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
 
     /** The writer thread of the most recent start, or null in sync mode; for tests. */
     Thread writerThread() {
-        return writer;
+        Generation g = gen;
+        return g == null ? null : g.writer;
     }
 
-    /** Formats and writes one event; never throws. */
+    /** Formats and writes one event; never throws. Overridable as a test seam. */
     protected void send(ILoggingEvent event) {
         try {
             PatternLayout msgLayout = layout;
@@ -308,7 +342,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 }
             }
         } catch (RuntimeException e) {
-            addError("syslog write failed: " + e.getMessage());
+            reportFailure("syslog write failed: " + e.getMessage());
         }
     }
 
@@ -331,44 +365,61 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         if (!isStarted()) {
             return;
         }
-        running = false;
+        Generation g = gen;
+        if (g != null) {
+            g.running = false;
+        }
         synchronized (stopLock) {
             if (!isStarted()) {
                 return;
             }
             super.stop();   // AppenderBase.doAppend ignores events from here on
-            shutdownWriter();
+            if (g != null) {
+                shutdownWriter(g);
+            }
             stopLayouts();
             destroySyslog();
+            long total = dropped.get();
+            if (total > 0) {
+                addWarn("syslog appender [" + getName() + "] stopped; " + total + " events dropped in total ("
+                        + droppedWhileStopping.get() + " while stopping)");
+            }
         }
     }
 
-    private void shutdownWriter() {
-        Thread w = writer;
-        if (w != null) {
-            try {
+    private void shutdownWriter(Generation g) {
+        Thread w = g.writer;
+        try {
+            if (shutdownTimeoutMs > 0) {
                 w.join(shutdownTimeoutMs);
-                if (w.isAlive()) {
-                    abandoned = true;
-                    // the ported TCP writer retries a failed write; each retry swallows one interrupt, so keep interrupting
-                    long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1000);
-                    while (w.isAlive() && System.nanoTime() < until) {
-                        w.interrupt();
-                        w.join(50);
-                    }
-                }
-            } catch (InterruptedException e) {
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (w.isAlive()) {
+            // timeout 0, timeout expired, or the caller was interrupted: stop waiting for the drain
+            g.abandoned = true;
+            // the ported TCP writer retries a failed write; each retry swallows one interrupt, so keep interrupting
+            long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1000);
+            boolean callerInterrupted = false;
+            while (w.isAlive() && System.nanoTime() < until) {
                 w.interrupt();
+                try {
+                    w.join(50);
+                } catch (InterruptedException e) {
+                    callerInterrupted = true;
+                }
+            }
+            if (callerInterrupted) {
                 Thread.currentThread().interrupt();
             }
         }
-        if (queue != null) {
-            int left = queue.size();
-            if (left > 0) {
-                queue.clear();
-                dropped.addAndGet(left);
-                addWarn("syslog appender stopped with " + left + " undelivered events");
-            }
+        // atomic hand-off: whatever is still queued is counted exactly once, here
+        List<ILoggingEvent> left = new ArrayList<>();
+        g.queue.drainTo(left);
+        if (!left.isEmpty()) {
+            dropped.addAndGet(left.size());
+            droppedWhileStopping.addAndGet(left.size());
         }
     }
 
@@ -405,5 +456,6 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setSync(boolean v) { this.sync = v; }
     public void setQueueSize(int v) { this.queueSize = v; }
     public void setBlockWhenFull(boolean v) { this.blockWhenFull = v; }
+    /** Maximum time stop() waits for queued events to be written; 0 means do not wait. Must not be negative. */
     public void setShutdownTimeoutMs(long v) { this.shutdownTimeoutMs = v; }
 }
