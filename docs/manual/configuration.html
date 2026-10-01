@@ -27,7 +27,8 @@ values do not throw: the appender writes an error to Logback's status system and
 <tr><td class="prop">syslogHost</td><td>String</td><td><code>localhost</code></td><td>Host name or address of the syslog server. Ignored for <code>UNIX</code>. For TLS this is also the name the server certificate must match.</td></tr>
 <tr><td class="prop">port</td><td>int</td><td><code>514</code></td><td>Server port, 1 to 65535. Ignored for <code>UNIX</code>. Conventional ports are 514 (UDP and TCP) and 6514 (TLS).</td></tr>
 <tr><td class="prop">protocol</td><td>enum</td><td><code>UDP</code></td><td><code>UDP</code>, <code>TCP</code>, <code>TLS</code> or <code>UNIX</code>. See <a href="transports.html">Chapter 4</a>.</td></tr>
-<tr><td class="prop">unixSocketPath</td><td>String</td><td><code>/dev/log</code></td><td>Socket path for <code>UNIX</code>. Stream sockets only.</td></tr>
+<tr><td class="prop">unixSocketPath</td><td>String</td><td><code>/dev/log</code></td><td>Socket path for <code>UNIX</code>. The local syslog socket is <code>/dev/log</code> on Linux and <code>/var/run/syslog</code> on macOS.</td></tr>
+<tr><td class="prop">unixSocketType</td><td>enum</td><td><code>DATAGRAM</code></td><td>Socket type for <code>UNIX</code>: <code>DATAGRAM</code> (one datagram per message; <code>/dev/log</code> and <code>/var/run/syslog</code> are datagram sockets; Linux and macOS only) or <code>STREAM</code> (newline-terminated messages on a stream connection, e.g. syslog-ng <code>unix-stream()</code>). See <a href="transports.html#unix">Chapter 4</a>.</td></tr>
 </table>
 <h2>Message content</h2>
 <table>
@@ -37,7 +38,7 @@ values do not throw: the appender writes an error to Logback's status system and
 <tr><td class="prop">suffixPattern</td><td>String</td><td><code>[%thread] %logger %msg</code></td><td>Logback <code>PatternLayout</code> pattern for the text of each syslog message. Must not be empty. Exception output is never taken from this pattern.</td></tr>
 <tr><td class="prop">stackTracePattern</td><td>String</td><td><code>%ex{full}</code></td><td>Pattern used to render exceptions; each resulting line is sent as its own message. Must not be empty unless <code>throwableExcluded</code> is true.</td></tr>
 <tr><td class="prop">throwableExcluded</td><td>boolean</td><td><code>false</code></td><td>When true, exceptions are not sent.</td></tr>
-<tr><td class="prop">sendLocalName</td><td>boolean</td><td><code>true</code></td><td>Include the local host name in the RFC 3164 header. Ignored with <code>rfc5424</code>.</td></tr>
+<tr><td class="prop">sendLocalName</td><td>boolean</td><td><code>true</code></td><td>Include the local host name in the RFC 3164 header. For <code>UNIX</code> the default is <code>false</code>, because the local socket format has no host name and journald and rsyslog would read it as the tag. Ignored with <code>rfc5424</code>.</td></tr>
 <tr><td class="prop">sendLocalTimestamp</td><td>boolean</td><td><code>true</code></td><td>Include a timestamp in the RFC 3164 header. Ignored with <code>rfc5424</code>.</td></tr>
 <tr><td class="prop">maxMessageLength</td><td>int</td><td><code>1024</code>; <code>2048</code> with <code>rfc5424</code></td><td>Maximum size in bytes of one message including its header; at least 128. See <a href="formats.html#length">Message length</a>.</td></tr>
 <tr><td class="prop">rfc5424</td><td>boolean</td><td><code>false</code></td><td>Send RFC 5424 frames instead of RFC 3164. Enables <code>structuredData</code>. See <a href="formats.html">Chapter 5</a>.</td></tr>

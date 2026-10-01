@@ -12,7 +12,8 @@ Status: pre-release (`1.0.0-SNAPSHOT`). It is not yet published to a public repo
 
 ## Features
 
-- **Transports:** UDP, TCP, TLS and unix domain sockets (stream).
+- **Transports:** UDP, TCP, TLS and unix domain sockets: datagram (the default, for `/dev/log` with journald or
+  rsyslog) and stream.
 - **TLS done carefully:** a private TLS context per appender (the JVM-wide `javax.net.ssl.*` properties are never touched),
   host name verification on by default, bounded connect and handshake.
 - **Formats:** RFC 3164 (default) and RFC 5424, including structured data and message modifiers.
@@ -93,6 +94,7 @@ java -cp red5-logback-syslog-1.0.0-SNAPSHOT.jar \
 |---|---|---|
 | `syslogHost`, `port` | `localhost`, `514` | Where to send |
 | `protocol` | `UDP` | `UDP`, `TCP`, `TLS` or `UNIX` |
+| `unixSocketPath`, `unixSocketType` | `/dev/log`, `DATAGRAM` | Socket path and type (`DATAGRAM` or `STREAM`) for `UNIX` |
 | `facility` | `USER` | Syslog facility (`LOCAL0` to `LOCAL7`, ...) |
 | `appName` | none | Tag (RFC 3164) or APP-NAME (RFC 5424) |
 | `suffixPattern` | `[%thread] %logger %msg` | Logback pattern for the message text |
@@ -142,8 +144,11 @@ local ports in the 15140 to 15199 range, so do not run two builds at the same ti
 
 ## Known limitations
 
-- Unix sockets are stream-only, because Java 21 has no unix datagram sockets. Datagram-only `/dev/log` (journald,
-  default rsyslog) is not supported; use UDP or TCP to `127.0.0.1` instead.
+- Unix datagram sockets (`unixSocketType` `DATAGRAM`, the default) call libc through `java.lang.foreign`, which is a
+  preview API in Java 21 and final from Java 22. It is used reflectively, so no `--enable-preview` flag is needed, but
+  the JDK prints a one-time warning about a restricted method; run with `--enable-native-access=ALL-UNNAMED` to
+  silence it. They work on Linux and macOS only; Windows is unsupported (use UDP or TCP to `127.0.0.1`). The macOS
+  socket layout follows the system headers but is untested; only Linux is tested. `STREAM` needs none of this.
 - TCP frames are LF-delimited in both formats; octet-counted framing (RFC 6587) is not implemented.
 - The appender requires a TLS trust store or key store to be configured; for public certificate authorities point
   `sslTrustStore` at the JDK's `cacerts`.

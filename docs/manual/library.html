@@ -42,7 +42,7 @@ Syslog.destroyInstance("red5");</code></pre>
 <tr><td class="prop"><code>org.red5.syslog.impl.net.udp.UDPNetSyslogConfig</code></td><td>UDP</td></tr>
 <tr><td class="prop"><code>org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig</code></td><td>TCP</td></tr>
 <tr><td class="prop"><code>org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig</code></td><td>TLS (<code>setTrustStore</code>, <code>setKeyStore</code>, <code>setSslVerifyHostname</code>)</td></tr>
-<tr><td class="prop"><code>org.red5.syslog.impl.unix.socket.UnixSocketSyslogConfig</code></td><td>Unix stream socket (<code>setPath</code>)</td></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.unix.socket.UnixSocketSyslogConfig</code></td><td>Unix socket (<code>setPath</code>; <code>setType</code>: <code>SOCK_DGRAM</code>, the default, or <code>SOCK_STREAM</code>)</td></tr>
 <tr><td class="prop"><code>org.red5.syslog.impl.net.tcp.pool.PooledTCPNetSyslogConfig</code></td><td>TCP with a pool of connections</td></tr>
 <tr><td class="prop"><code>org.red5.syslog.impl.multiple.MultipleSyslogConfig</code></td><td>Fan-out to several destinations; each fails independently</td></tr>
 </table>
@@ -104,7 +104,7 @@ SyslogServer.destroyInstance("udp-5140");</code></pre>
 <tr><th>Area</th><th>Change</th></tr>
 <tr><td>Packages</td><td><code>org.productivity.java.syslog4j</code> is now <code>org.red5.syslog</code>; class names are unchanged.</td></tr>
 <tr><td>log4j</td><td>The log4j appender and back-log handler are not included. Use the Logback appender.</td></tr>
-<tr><td>Unix sockets</td><td>JNA is gone. Unix sockets use the JDK's own support, which has stream sockets only (no datagram, so no journald <code>/dev/log</code>). The <code>unix_syslog</code> protocol, which called libc through JNA, now uses the same socket implementation as <code>unix_socket</code>.</td></tr>
+<tr><td>Unix sockets</td><td>JNA is gone. Datagram sockets (the default type, which <code>/dev/log</code> is) call the C library through <code>java.lang.foreign</code>, used reflectively, on Linux and macOS; stream sockets use the JDK's own support. If datagram sockets are unavailable (for example on Windows) <code>initialize()</code> fails with the reason, and the default <code>unix_syslog</code> and <code>unix_socket</code> instances are not registered. The <code>unix_syslog</code> protocol, which called libc through JNA, now uses the same socket implementation as <code>unix_socket</code>.</td></tr>
 <tr><td>Connection pool</td><td>Apache Commons Pool is replaced by a small bounded pool. Only the maximum active connections and the maximum wait are used; the idle, eviction and test settings are accepted and ignored.</td></tr>
 <tr><td>TLS</td><td>Each instance has its own TLS context; the <code>javax.net.ssl.*</code> system properties are never read or changed. Host name verification is on by default (<code>setSslVerifyHostname</code>), and connecting and the handshake are bounded by <code>setConnectTimeoutMillis</code> (default 3000).</td></tr>
 <tr><td>Dates</td><td>Joda-Time is replaced by <code>java.time</code>. <code>StructuredSyslogServerEvent.getDateTime()</code> returns an <code>OffsetDateTime</code>, and RFC 5424 timestamps are printed with at most six fractional digits.</td></tr>

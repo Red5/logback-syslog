@@ -22,7 +22,7 @@
 <tr><td class="prop"><code>UDP</code></td><td>A local or trusted-network syslog daemon</td><td>Fast, and nothing is retained if the server is down: UDP gives no delivery feedback. Each message must fit one datagram (65507 bytes at most).</td></tr>
 <tr><td class="prop"><code>TCP</code></td><td>Reliable delivery on a trusted network</td><td>Messages are LF-delimited. Failed writes go to the backlog and are replayed.</td></tr>
 <tr><td class="prop"><code>TLS</code></td><td>Remote collectors and hosted services</td><td>TCP inside TLS, with host name verification on by default.</td></tr>
-<tr><td class="prop"><code>UNIX</code></td><td>A daemon listening on a unix <em>stream</em> socket</td><td>Stream sockets only; see below.</td></tr>
+<tr><td class="prop"><code>UNIX</code></td><td>The local syslog daemon (<code>/dev/log</code>: journald, rsyslog) or a unix stream listener</td><td>Datagram by default, stream on request; Linux and macOS. See below.</td></tr>
 </table>
 
 <h2 id="udp">UDP</h2>
@@ -82,16 +82,36 @@ service with a publicly issued certificate), point <code>sslTrustStore</code> at
 <code>$JAVA_HOME/lib/security/cacerts</code> with the password <code>changeit</code>.</p></div>
 
 <h2 id="unix">Unix sockets</h2>
-<pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;
-&lt;unixSocketPath&gt;/var/run/syslog-ng/syslog.sock&lt;/unixSocketPath&gt;</code></pre>
+<p>The local syslog socket, <code>/dev/log</code> on Linux, is a <em>datagram</em> socket, and that is the default.
+journald and rsyslog both read it, so this is all that local logging needs:</p>
+<pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;</code></pre>
 
-<p>The appender connects with the JDK's unix domain socket support (no native library) and writes one
-line per message.</p>
-<div class="warning"><strong>Stream sockets only</strong><p>Java 21 has no unix <em>datagram</em> sockets. Most Linux systems expose
-<code>/dev/log</code> as a datagram socket (journald, and rsyslog by default), and the appender cannot write to
-it. It works with a listener that accepts <em>stream</em> connections, such as a syslog-ng
-<code>unix-stream()</code> source or an rsyslog stream input. For local logging to journald or rsyslog use UDP to
-<code>127.0.0.1</code> or TCP instead.</p></div>
+<p>Each message is sent as one datagram, without a host name in the header (the local format is
+<code>&lt;PRI&gt;TIMESTAMP TAG: MESSAGE</code>), so <code>appName</code> becomes the tag that
+<code>journalctl -t</code> and <code>/var/log/syslog</code> show. A send never blocks: if the daemon is not running or its
+receive buffer is full, the message goes to the backlog and is replayed later (<a href="reliability.html">Chapter 6</a>).
+On macOS the local socket is <code>/var/run/syslog</code>:</p>
+<pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;
+&lt;unixSocketPath&gt;/var/run/syslog&lt;/unixSocketPath&gt;</code></pre>
+
+<p>A daemon that listens on a unix <em>stream</em> socket, such as a syslog-ng <code>unix-stream()</code> source or an
+rsyslog stream input, needs <code>STREAM</code>; the appender then writes one line per message:</p>
+<pre><code>&lt;protocol&gt;UNIX&lt;/protocol&gt;
+&lt;unixSocketPath&gt;/var/run/syslog-ng/syslog.sock&lt;/unixSocketPath&gt;
+&lt;unixSocketType&gt;STREAM&lt;/unixSocketType&gt;</code></pre>
+
+<div class="note"><strong>Datagram sockets and native access</strong><p>The JDK has no unix datagram channel, so for
+<code>DATAGRAM</code> the appender calls the C library through <code>java.lang.foreign</code>. That API is a preview
+API in Java 21 and final from Java 22; the appender uses it through reflection, so no <code>--enable-preview</code> flag
+is needed. The first use prints a one-time JDK warning:</p>
+<pre><code>WARNING: A restricted method in java.lang.foreign.Linker has been called
+WARNING: java.lang.foreign.Linker::downcallHandle has been called by the unnamed module
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for this module</code></pre>
+<p>Start the JVM with <code>--enable-native-access=ALL-UNNAMED</code> to allow native access and silence it.
+<code>DATAGRAM</code> works on Linux and macOS (the macOS socket layout follows the system headers but is not tested
+here); Windows is not supported. Where it is unavailable the appender does not start and says why; use
+<code>STREAM</code>, or UDP or TCP to <code>127.0.0.1</code>. <code>STREAM</code> uses the JDK's own unix socket support
+and needs none of this.</p></div>
 
 <div class="pager"><span><a href="configuration.html">&laquo; Chapter 3: Appender configuration</a></span><span><a href="formats.html">Chapter 5: Message formats &raquo;</a></span></div>
 </main>

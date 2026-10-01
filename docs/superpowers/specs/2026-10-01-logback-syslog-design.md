@@ -48,7 +48,7 @@ and moves away from the reference).
 Modernization rules:
 - Generics, enums for facility and level, records where a type is a plain value.
 - `java.util.Base64` replaces the bundled `Base64.java`.
-- `UnixDomainSocketAddress` (JDK 16+) replaces JNA.
+- `UnixDomainSocketAddress` (JDK 16+, stream) and reflective `java.lang.foreign` (datagram) replace JNA.
 - A small internal bounded connection pool replaces commons-pool.
 - Platform threads for the async writer (one daemon thread per appender) and the
   server listeners: the ported writers synchronize around blocking socket I/O, which
@@ -66,7 +66,7 @@ org.red5.syslog.impl                 AbstractSyslog, AbstractSyslogConfig
 org.red5.syslog.impl.net.udp
 org.red5.syslog.impl.net.tcp         + pool (internal bounded pool)
 org.red5.syslog.impl.net.tcp.ssl
-org.red5.syslog.impl.unix            UnixDomainSocketAddress based
+org.red5.syslog.impl.unix            stream: UnixDomainSocketAddress; datagram: reflective java.lang.foreign
 org.red5.syslog.impl.multiple
 org.red5.syslog.impl.message         structured, pci, modifier.*, processor
 org.red5.syslog.impl.backlog         handlers, print-stream
@@ -97,10 +97,24 @@ Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
   configured host name is used for SNI and endpoint identification); the
   `sslVerifyHostname` property turns it off, which is insecure. The handshake is
   bounded by the connect timeout.
-- **Unix socket:** stream `SocketChannel` over `UnixDomainSocketAddress`, default
-  path `/dev/log`, LF-terminated frames. No JNA. JDK 21 has no unix datagram
-  channel, so datagram-only listeners (journald, default rsyslog `/dev/log`)
-  are not supported; requesting a datagram type fails with a clear error.
+- **Unix socket:** default path `/dev/log`, no JNA, two types. Datagram (the
+  default, `SOCK_DGRAM`; what `/dev/log` is for journald and rsyslog, and
+  `/var/run/syslog` on macOS): one datagram per message, no framing, through
+  `UnixDatagramSocket`, which calls libc `socket`/`connect`/`send`/`close`
+  through `java.lang.foreign` by reflection (preview in JDK 21, final in 22+;
+  no compile-time preview dependency, no `--enable-preview`). Sends use
+  `MSG_DONTWAIT` and never block; errno is captured with
+  `Linker.Option.captureCallState("errno")` and reported by name and
+  `strerror` text. Available on Linux and macOS/BSD (macOS layout untested)
+  with a 64-bit JVM that has `java.lang.foreign` and allows native access;
+  Windows and other systems are unavailable, and selecting datagram there fails
+  at initialization with the reason and the alternatives (stream, or UDP/TCP to
+  `127.0.0.1`). The JDK prints a one-time restricted-method warning unless the
+  JVM runs with `--enable-native-access=ALL-UNNAMED`. Stream (`SOCK_STREAM`):
+  `SocketChannel` over `UnixDomainSocketAddress`, LF-terminated frames. Both
+  connect lazily and reconnect after a failure; failures go to the backlog. The
+  appender selects the type with `unixSocketType` (`DATAGRAM` default, `STREAM`)
+  and omits the host name from UNIX frames unless `sendLocalName` is set.
 - **Multiple:** fan-out over several `SyslogIF` instances; each fails independently.
 - **Pooled TCP:** bounded `ArrayBlockingQueue` of connections, keeping the original
   pool settings (max active, max wait).
@@ -164,7 +178,7 @@ syslog severity, and sent through the configured `SyslogIF`.
 - Names shared with Logback's built-in `SyslogAppender`: `syslogHost`, `port`, `facility`, `suffixPattern`,
   `stackTracePattern`, `throwableExcluded`, `sendLocalName`, `sendLocalTimestamp`,
   `maxMessageLength`.
-- Additional: `protocol`, `unixSocketPath`, `rfc5424`, `appName`, `queueSize`,
+- Additional: `protocol`, `unixSocketPath`, `unixSocketType`, `rfc5424`, `appName`, `queueSize`,
   `sync`, overflow policy, TLS store settings, `sslVerifyHostname`, `backlogSize`.
 - Structured data via nested `<structuredData>` elements
   (`<id>`, then `<entry><name/><value/></entry>`; Joran ignores attributes on

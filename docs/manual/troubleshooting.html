@@ -25,7 +25,8 @@ events are sent and nothing is thrown into your application. Look for a line of 
 <p>The checks are: a non-empty <code>suffixPattern</code> (and <code>stackTracePattern</code> unless
 <code>throwableExcluded</code>); a positive <code>queueSize</code>; a non-negative <code>shutdownTimeoutMs</code> and
 <code>backlogSize</code>; a <code>maxMessageLength</code> of at least 128; a non-empty host and a port from 1 to 65535
-(for <code>UNIX</code>: a non-empty <code>unixSocketPath</code>); for TLS, a trust store or key store; and for
+(for <code>UNIX</code>: a non-empty <code>unixSocketPath</code>, a non-null <code>unixSocketType</code>, and for
+<code>DATAGRAM</code> that unix datagram sockets are available); for TLS, a trust store or key store; and for
 <code>rfc5424</code> a valid <code>appName</code> and valid <code>structuredData</code> (ids and names 1 to 32 printable ASCII
 characters without space, <code>=</code>, <code>]</code> or <code>"</code>; ids unique).</p>
 <p>For TLS the trust store and key store files are loaded at start, so a wrong path or password shows up here too, as
@@ -58,8 +59,19 @@ interprets them. RFC 5424 timestamps include the offset.</li>
 </table>
 
 <h2>Unix socket does not work</h2>
-<p>Check that the daemon listens on a <em>stream</em> socket at that path; see <a href="transports.html#unix">Chapter 4</a>.
-A datagram-only <code>/dev/log</code> cannot be used.</p>
+<p>The status output names the cause, with the system error:</p>
+<table>
+<tr><th>Message contains</th><th>Cause and fix</th></tr>
+<tr><td><code>unix datagram sockets are unavailable</code></td><td>The appender did not start: the platform (for example Windows) or the JVM does not allow datagram sockets. Use <code>unixSocketType</code> <code>STREAM</code>, or UDP or TCP to <code>127.0.0.1</code>.</td></tr>
+<tr><td><code>ENOENT</code></td><td>Nothing exists at <code>unixSocketPath</code>: the daemon is not running or uses another path (<code>/var/run/syslog</code> on macOS).</td></tr>
+<tr><td><code>ECONNREFUSED</code></td><td>The path exists but nobody is reading it: a stale socket file, or not a socket at all.</td></tr>
+<tr><td><code>EPROTOTYPE</code></td><td>The daemon listens on a stream socket. Set <code>unixSocketType</code> to <code>STREAM</code>.</td></tr>
+<tr><td><code>EACCES</code></td><td>The application's user may not write to the socket.</td></tr>
+<tr><td><code>EAGAIN</code> or <code>ENOBUFS</code></td><td>The daemon's receive buffer is full; messages wait in the backlog and are replayed.</td></tr>
+</table>
+<p>If messages arrive but <code>journalctl -t</code> does not find them under your <code>appName</code>, check that
+<code>sendLocalName</code> is not set to true: a host name in the header is read as the tag. See
+<a href="transports.html#unix">Chapter 4</a>.</p>
 
 <h2>Frequently asked questions</h2>
 <h3>Does the appender block my application when the syslog server is down?</h3>
@@ -78,7 +90,10 @@ messages. UDP itself does not guarantee ordering on the network.</p>
 
 <h2>Known limitations</h2>
 <ul>
-<li><strong>Unix sockets are stream-only</strong> (Java 21 has no unix datagram sockets).</li>
+<li><strong>Unix datagram sockets need native access</strong> through <code>java.lang.foreign</code> (a preview API in
+Java 21, used reflectively, so no flag is needed). The JDK prints a one-time warning unless the JVM runs with
+<code>--enable-native-access=ALL-UNNAMED</code>. They work on Linux and macOS only (macOS untested); Windows is
+unsupported.</li>
 <li><strong>TCP framing is LF-delimited.</strong> Octet-counted framing (RFC 6587) is not implemented, so a receiver that accepts only
 octet-counted frames cannot read the stream.</li>
 <li><strong>TLS needs a trust or key store configured.</strong> To use the Java default trust (public authorities), point
