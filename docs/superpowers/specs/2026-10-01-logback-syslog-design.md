@@ -50,7 +50,9 @@ Modernization rules:
 - `java.util.Base64` replaces the bundled `Base64.java`.
 - `UnixDomainSocketAddress` (JDK 16+) replaces JNA.
 - A small internal bounded connection pool replaces commons-pool.
-- Virtual threads for the server and async send.
+- Platform threads for the async writer (one daemon thread per appender) and the
+  server listeners: the ported writers synchronize around blocking socket I/O, which
+  pins a virtual thread's carrier on JDK 21 (JDK 24+, JEP 491, would lift this).
 - No log4j or `LogLog` references; diagnostics go through Logback `Context` status.
 - Imports instead of fully qualified names; consistent with existing Red5 code style.
 
@@ -80,15 +82,21 @@ Test dependencies: JUnit 5.
 
 Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
 
-- **UDP:** `DatagramChannel` per instance. Messages over `maxMessageLength`
+- **UDP:** `java.net.DatagramSocket` per instance. Messages over `maxMessageLength`
   (default 1024 for RFC 3164, 2048 for RFC 5424) are truncated, or split when
   `splitMessageBeforeSend` is enabled.
-- **TCP:** `SocketChannel`. LF-delimited framing in both RFC 3164 and RFC 5424
+- **TCP:** `java.net.Socket`. LF-delimited framing in both RFC 3164 and RFC 5424
   modes (RFC 6587 non-transparent framing; octet-counting is not implemented).
   Keep-alive and optional `persistConnection`. A failed write triggers
   one reconnect attempt, then the message goes to the backlog.
-- **TLS:** the TCP implementation over an `SSLSocketFactory`. Configurable
-  keystore and truststore paths and passwords. Hostname verification on by default.
+- **TLS:** the TCP implementation with TLS layered over the connected socket.
+  Configurable keystore and truststore paths and passwords. Each client and server
+  instance builds a private `SSLContext` from its own stores (platform default trust
+  managers when no truststore is set) and never reads or sets the JVM-wide
+  `javax.net.ssl.*` properties. Hostname verification is on by default (the
+  configured host name is used for SNI and endpoint identification); the
+  `sslVerifyHostname` property turns it off, which is insecure. The handshake is
+  bounded by the connect timeout.
 - **Unix socket:** stream `SocketChannel` over `UnixDomainSocketAddress`, default
   path `/dev/log`, LF-terminated frames. No JNA. JDK 21 has no unix datagram
   channel, so datagram-only listeners (journald, default rsyslog `/dev/log`)
@@ -101,19 +109,30 @@ Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
 
 - `doAppend` must not block Red5 request threads.
 - Default is async: events go on a bounded queue (`queueSize`, default 4096)
-  drained by a single virtual-thread writer.
+  drained by a single platform daemon thread per appender (see section 4).
 - Overflow policy: `discardWhenFull` (default, drops and counts) or `blockWhenFull`.
 - `sync` flag bypasses the queue.
-- `stop()` drains the queue up to `shutdownTimeoutMs`, then closes transports.
-- The ported server runs its listeners on virtual threads, one per TCP connection.
+- `stop()` drains the queue up to `shutdownTimeoutMs`, then closes transports; a
+  writer still blocked in socket I/O is released by closing its socket without
+  taking the writer's lock.
+- The ported server runs its listeners on platform threads, one per TCP connection
+  (off the appender path).
 
 ## 8. Errors and backlog
 
 - The appender never throws into the logging path.
-- Failures are reported through Logback `addError`, rate-limited.
-- Failed messages go to the configured backlog handler. Default is a bounded
-  in-memory ring buffer replayed on reconnect. The print-stream handler remains
-  available as an alternative.
+- Failures are reported through Logback `addError`, rate-limited: an outage is one
+  ERROR status per window, the recovery an INFO status with the replayed count.
+- Failed messages go to a bounded in-memory ring buffer (`backlogSize`, default
+  1000, 0 disables it) replayed in order on reconnect. The other library backlog
+  handlers (print-stream and others) remain available programmatically but are not
+  selectable from XML.
+- While the destination is down, reconnects back off: after a failed write or
+  replay no connection is attempted for 1 s, doubling to at most 30 s, reset on
+  success; lines arriving meanwhile go straight to the backlog.
+- Every lost message is counted in the dropped count (queue overflow, stop,
+  backlog eviction, backlog leftovers at stop, failed writes without a backlog)
+  and the total is reported in the stop warning.
 - Configuration is validated in `start()`. Invalid config calls `addError` and
   leaves the appender inactive instead of throwing.
 
@@ -146,7 +165,7 @@ syslog severity, and sent through the configured `SyslogIF`.
   `stackTracePattern`, `throwableExcluded`, `sendLocalName`, `sendLocalTimestamp`,
   `maxMessageLength`.
 - Additional: `protocol`, `unixSocketPath`, `rfc5424`, `appName`, `queueSize`,
-  `sync`, overflow policy, TLS store settings, backlog selection.
+  `sync`, overflow policy, TLS store settings, `sslVerifyHostname`, `backlogSize`.
 - Structured data via nested `<structuredData>` elements
   (`<id>`, then `<entry><name/><value/></entry>`; Joran ignores attributes on
   nested components); modifiers via `<modifier class="...">`, using Joran
