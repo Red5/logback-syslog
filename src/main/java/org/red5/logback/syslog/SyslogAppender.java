@@ -47,7 +47,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private boolean throwableExcluded;
     private boolean sendLocalName = true;
     private boolean sendLocalTimestamp = true;
-    private int maxMessageLength = 1024;
+    private int maxMessageLength;
     private String appName;
     private boolean rfc5424;
     private String unixSocketPath = "/dev/log";
@@ -72,6 +72,29 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private RingBufferBackLogHandler backlog;
     private String instanceName;
     private volatile int facilityCode;
+    private boolean maxMessageLengthSet;
+
+    /** The limit in effect: the configured value, else 2048 for rfc5424 (the RFC 5424 minimum receivers must support) or 1024 for plain syslog. */
+    int effectiveMaxMessageLength() {
+        return maxMessageLengthSet ? maxMessageLength : (rfc5424 ? 2048 : 1024);
+    }
+
+    /** Frame body of an RFC 5424 message; with no structured data the field is the NILVALUE "-" instead of the library's "[0@0]". */
+    private static final class AppenderStructuredMessage extends StructuredSyslogMessage {
+        private static final long serialVersionUID = 1L;
+
+        AppenderStructuredMessage(Map<String, Map<String, String>> sd, String message) {
+            super(null, sd, message);
+        }
+
+        @Override
+        public String createMessage() {
+            if (getStructuredData() != null && !getStructuredData().isEmpty()) {
+                return super.createMessage();
+            }
+            return getMessage() == null || getMessage().isBlank() ? "- -" : "- - " + getMessage();
+        }
+    }
 
     /** State of one start/stop cycle; an old writer only ever sees its own generation, so a restart cannot revive it. */
     private static final class Generation {
@@ -116,7 +139,15 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             // a UDP datagram carries at most 65507 bytes: a larger limit would make an oversized datagram fail on send, and the
             // failed line would then sit at the head of the backlog and block every later line; capped, the ported splitter
             // breaks long messages into several datagrams instead
-            cfg.setMaxMessageLength(protocol == Protocol.UDP ? Math.min(maxMessageLength, UDP_MAX_PAYLOAD) : maxMessageLength);
+            int limit = effectiveMaxMessageLength();
+            if (protocol == Protocol.UDP && limit > UDP_MAX_PAYLOAD) {
+                addWarn("syslog appender [" + getName() + "]: maxMessageLength " + limit + " lowered to " + UDP_MAX_PAYLOAD + " (UDP datagram limit)");
+                limit = UDP_MAX_PAYLOAD;
+            }
+            cfg.setMaxMessageLength(limit);
+            if (rfc5424) {
+                cfg.setTruncateMessage(true);   // RFC 5424 section 6.1: a message over the limit is truncated, not split into continuation frames
+            }
             cfg.setUseStructuredData(rfc5424);
             if (rfc5424) {
                 // RFC 5424 carries the application name in the header (APP-NAME) and the modifiers act on the MSG text
@@ -183,7 +214,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         if (backlogSize < 0) {
             return "backlogSize must not be negative: " + backlogSize;
         }
-        if (maxMessageLength <= 0) {
+        if (effectiveMaxMessageLength() <= 0) {
             return "maxMessageLength must be positive: " + maxMessageLength;
         }
         if (protocol != Protocol.UNIX) {
@@ -198,16 +229,16 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             return "TLS requires sslTrustStore and/or sslKeyStore";
         }
         if (rfc5424) {
-            if (!isEmpty(appName) && !isSdName(appName, 48)) {
+            if (!isEmpty(appName) && !isAppName(appName)) {
                 return "appName must be 1..48 printable ASCII characters without spaces for rfc5424: " + appName;
             }
             Set<String> ids = new HashSet<>();
             for (StructuredDataParam sd : structuredData) {
                 String id = sd.getId();
-                if (isEmpty(id) || id.isBlank()) {
+                if (id == null || id.isBlank()) {
                     return "structuredData id must not be blank";
                 }
-                if (!isSdName(id, 32)) {
+                if (!isSdName(id)) {
                     return "structuredData id must be 1..32 printable ASCII characters without space, '=', ']' or '\"': " + id;
                 }
                 if (!ids.add(id)) {
@@ -217,7 +248,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                     if (p.getKey() == null || p.getKey().isBlank()) {
                         return "structuredData [" + id + "] has a param with a blank name";
                     }
-                    if (!isSdName(p.getKey(), 32)) {
+                    if (!isSdName(p.getKey())) {
                         return "structuredData [" + id + "] param name must be 1..32 printable ASCII characters without space, '=', ']' or '\"': " + p.getKey();
                     }
                     if (p.getValue() == null) {
@@ -229,15 +260,23 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         return null;
     }
 
-    /** RFC 5424 SD-NAME / APP-NAME shape: printable US-ASCII (33..126), at most maxLen, and for names also no '=', ']' or '"'. */
-    private static boolean isSdName(String v, int maxLen) {
+    /** RFC 5424 APP-NAME: 1..48 printable US-ASCII characters. */
+    private static boolean isAppName(String v) {
+        return printable(v, 48, false);
+    }
+
+    /** RFC 5424 SD-NAME: 1..32 printable US-ASCII characters, none of '=', ']' or '"'. */
+    private static boolean isSdName(String v) {
+        return printable(v, 32, true);
+    }
+
+    private static boolean printable(String v, int maxLen, boolean sdName) {
         if (v.isEmpty() || v.length() > maxLen) {
             return false;
         }
-        boolean strict = maxLen == 32;
         for (int i = 0; i < v.length(); i++) {
             char c = v.charAt(i);
-            if (c < 33 || c > 126 || (strict && (c == '=' || c == ']' || c == '"'))) {
+            if (c < 33 || c > 126 || (sdName && (c == '=' || c == ']' || c == '"'))) {
                 return false;
             }
         }
@@ -466,7 +505,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             for (SyslogMessageModifierIF m : activeModifiers) {
                 text = m.modify(out, facilityCode, level, text);
             }
-            structured = new StructuredSyslogMessage(null, structuredDataMap, text);
+            structured = new AppenderStructuredMessage(structuredDataMap, text);
         }
         RingBufferBackLogHandler h = backlog;
         if (h != null && out instanceof AbstractSyslog as && h.size() > 0) {
@@ -594,7 +633,8 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
      * through setters, so only modifiers that are configurable that way work from XML: PrefixSyslogMessageModifier
      * (property prefix), SuffixSyslogMessageModifier (property suffix) and HTMLEntityEscapeSyslogMessageModifier.
      * StringCase, Checksum, Hash, Mac and Sequential modifiers need constructor arguments or a config object and can
-     * only be added programmatically.
+     * only be added programmatically. An unknown modifier class is reported by Joran as an error status and ignored;
+     * the appender still starts, without that modifier.
      */
     public void addModifier(SyslogMessageModifierIF m) { modifiers.add(m); }
 
@@ -607,10 +647,25 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setSuffixPattern(String v) { this.suffixPattern = v; }
     public void setStackTracePattern(String v) { this.stackTracePattern = v; }
     public void setThrowableExcluded(boolean v) { this.throwableExcluded = v; }
+    /** Ignored when rfc5424 is true: the RFC 5424 header always carries timestamp and hostname. */
     public void setSendLocalName(boolean v) { this.sendLocalName = v; }
+    /** Ignored when rfc5424 is true: the RFC 5424 header always carries timestamp and hostname. */
     public void setSendLocalTimestamp(boolean v) { this.sendLocalTimestamp = v; }
-    public void setMaxMessageLength(int v) { this.maxMessageLength = v; }
+    /**
+     * Maximum size in bytes of one syslog message including its header. Default 1024, or 2048 when rfc5424 is true.
+     * With rfc5424 an over-long message is truncated (RFC 5424 section 6.1) at a UTF-8 character boundary; otherwise
+     * it is split into several messages. For UDP the limit is capped at 65507 (the datagram limit) with a warning.
+     */
+    public void setMaxMessageLength(int v) { this.maxMessageLength = v; this.maxMessageLengthSet = true; }
     public void setAppName(String v) { this.appName = v; }
+    /**
+     * Sends RFC 5424 frames: {@code <PRI>1 TIMESTAMP HOST APP-NAME - - STRUCTURED-DATA MSG}. The timestamp has at most 6
+     * fractional digits. appName is the APP-NAME (default "-"), PROCID and MSGID are always "-". Timestamp and hostname are
+     * always sent, so sendLocalName and sendLocalTimestamp are ignored. STRUCTURED-DATA is built from the configured
+     * structuredData elements, or is the NILVALUE "-" when there are none. Modifiers act on the MSG text only. Over-long
+     * messages are truncated, not split (see maxMessageLength). TCP frames are LF-delimited (RFC 6587 non-transparent
+     * framing), not octet-counted.
+     */
     public void setRfc5424(boolean v) { this.rfc5424 = v; }
     public void setUnixSocketPath(String v) { this.unixSocketPath = v; }
     public void setSslKeyStore(String v) { this.sslKeyStore = v; }
@@ -623,8 +678,9 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     /**
      * Number of formatted messages kept in memory while the syslog server cannot be reached (default 1000, newest kept
      * when full); they are replayed in order once a write succeeds again. 0 disables the backlog. Applies to the
-     * connection-oriented protocols (TCP, TLS, UNIX socket). UDP has no connection, so an unreachable server is
-     * silent loss: datagrams are sent without any acknowledgement and are never backlogged or replayed.
+     * connection-oriented protocols (TCP, TLS, UNIX socket). A UDP send that throws an IOException is backlogged and
+     * replayed too, but UDP gives no delivery feedback, so an unreachable UDP listener usually means silent loss
+     * rather than a backlog.
      */
     public void setBacklogSize(int v) { this.backlogSize = v; }
     /** Maximum time stop() waits for queued events to be written; 0 means do not wait. Must not be negative. */

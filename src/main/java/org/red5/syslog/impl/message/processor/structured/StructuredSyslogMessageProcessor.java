@@ -42,7 +42,8 @@ public class StructuredSyslogMessageProcessor extends AbstractSyslogMessageProce
 	private String applicationName = STRUCTURED_DATA_APP_NAME_DEFAULT_VALUE;
 	private String processId = STRUCTURED_DATA_PROCESS_ID_DEFAULT_VALUE;
 	
-	private DateTimeFormatter dateTimeFormatter = new DateTimeFormatterBuilder().appendPattern("yyyy-MM-dd'T'HH:mm:ss").appendFraction(ChronoField.NANO_OF_SECOND, 3, 9, true).appendOffset("+HH:MM", "Z").toFormatter();
+	// RFC 5424 TIME-SECFRAC is 1*6DIGIT, so printing never goes beyond microseconds (the server event parser stays lenient, 3-9 digits)
+	private DateTimeFormatter dateTimeFormatter = new DateTimeFormatterBuilder().appendPattern("yyyy-MM-dd'T'HH:mm:ss").appendFraction(ChronoField.NANO_OF_SECOND, 3, 6, true).appendOffset("+HH:MM", "Z").toFormatter();
 
 	public static void setDefault(StructuredSyslogMessageProcessor messageProcessor) {
 		if (messageProcessor != null) {

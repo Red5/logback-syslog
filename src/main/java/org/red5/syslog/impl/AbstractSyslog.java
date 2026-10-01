@@ -298,6 +298,13 @@ public abstract class AbstractSyslog implements SyslogIF {
 		if (this.syslogConfig.isTruncateMessage()) {
 			if (availableLen > 0 && mLength > availableLen) {
 				mLength = availableLen;
+
+				// never cut inside a UTF-8 multi-byte sequence: a continuation byte (10xxxxxx) at the cut means the character began earlier
+				if ("UTF-8".equalsIgnoreCase(this.syslogConfig.getCharSet())) {
+					while (mLength > 0 && (m[mLength] & 0xC0) == 0x80) {
+						mLength--;
+					}
+				}
 			}
 		}
 
