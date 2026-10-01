@@ -110,7 +110,10 @@ The complete reference, with every property and the nested `modifier` and `struc
 
 ## Documentation
 
-The user manual is static HTML in [`docs/manual/`](docs/manual/index.html); open `docs/manual/index.html` in a browser.
+The user manual is static HTML in [`docs/manual/`](docs/manual/index.html).
+
+- **Read it online:** [Red5 Logback Syslog manual](https://htmlpreview.github.io/?https://github.com/Red5/logback-syslog/blob/main/docs/manual/index.html) (rendered by the third-party htmlpreview.github.io service, which GitHub does not do for `.html` files in the repository view).
+- **Read it locally:** clone the repository and open `docs/manual/index.html` in a browser.
 
 | Chapter | Topic |
 |---|---|
