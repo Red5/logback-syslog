@@ -437,4 +437,89 @@ class SyslogAppenderAsyncTest {
         b.start();
         assertFalse(b.isStarted());
     }
+
+    private static SyslogAppender tcpAppender(LoggerContext ctx, int port) {
+        SyslogAppender a = new SyslogAppender();
+        a.setContext(ctx);
+        a.setSyslogHost("127.0.0.1");
+        a.setPort(port);
+        a.setProtocol(Protocol.TCP);
+        a.setSuffixPattern("%msg");
+        return a;
+    }
+
+    @Test
+    void serverDownAtStartThenUpReplaysBacklogBeforeNewMessages() throws Exception {
+        LoggerContext ctx = newContext();
+        SyslogAppender a = tcpAppender(ctx, 15166);
+        a.setAppName("app");
+        a.start();
+        assertTrue(a.isStarted());
+        assertFalse(a.syslogInstance().getConfig().isThrowExceptionOnWrite(), "failures must route to the backlog handlers");
+        Logger l = ctx.getLogger("t.Backlog");
+        l.addAppender(a);
+        l.info("early1");
+        l.info("early2");
+        Thread.sleep(500);   // let the writer hit the dead port and backlog both
+        try (CapturingServer s = CapturingServer.start("tcp", 15166, null)) {
+            l.info("later");
+            String m1 = s.poll(10_000);
+            String m2 = s.poll(10_000);
+            String m3 = s.poll(10_000);
+            assertNotNull(m1, "early1 missing");
+            assertNotNull(m2, "early2 missing");
+            assertNotNull(m3, "later missing");
+            assertTrue(m1.contains("early1"), m1);
+            assertTrue(m2.contains("early2"), m2);
+            assertTrue(m3.contains("later"), m3);
+            assertFalse(m1.contains("app: app"), "replay must not prefix the ident twice: " + m1);
+            assertNull(s.poll(500), "no duplicates");
+        } finally {
+            a.stop();
+        }
+    }
+
+    @Test
+    void backlogSizeZeroDisablesTheHandler() {
+        LoggerContext ctx = newContext();
+        SyslogAppender a = tcpAppender(ctx, 15167);
+        a.setBacklogSize(0);
+        a.start();
+        try {
+            assertEquals(0, a.backlogSize());
+        } finally {
+            a.stop();
+        }
+    }
+
+    @Test
+    void backlogIsBoundedAndKeepsNewest() throws Exception {
+        LoggerContext ctx = newContext();
+        SyslogAppender a = tcpAppender(ctx, 15168);
+        a.setBacklogSize(3);
+        a.start();
+        Logger l = ctx.getLogger("t.Bounded");
+        l.addAppender(a);
+        for (int i = 0; i < 6; i++) {
+            l.info("b" + i);
+        }
+        long end = System.currentTimeMillis() + 10_000;
+        while (a.backlogSize() < 3 && System.currentTimeMillis() < end) {
+            Thread.sleep(50);
+        }
+        Thread.sleep(300);
+        assertEquals(3, a.backlogSize());
+        try (CapturingServer s = CapturingServer.start("tcp", 15168, null)) {
+            l.info("b6");
+            String[] expected = { "b3", "b4", "b5", "b6" };
+            for (String e : expected) {
+                String m = s.poll(10_000);
+                assertNotNull(m, "missing " + e);
+                assertTrue(m.contains(e), "expected " + e + " got " + m);
+            }
+            assertNull(s.poll(500), "b0..b2 were evicted and nothing is duplicated");
+        } finally {
+            a.stop();
+        }
+    }
 }

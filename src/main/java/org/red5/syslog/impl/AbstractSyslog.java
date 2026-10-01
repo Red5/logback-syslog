@@ -211,6 +211,35 @@ public abstract class AbstractSyslog implements SyslogIF {
 	}
 	
 	public void log(SyslogMessageProcessorIF messageProcessor, int level, String message) {
+		logProcessed(messageProcessor,level,message,false);
+	}
+
+	/**
+	 * Prepares the message exactly as {@link #log(int, String)} would, but hands it straight to the backLog handlers
+	 * instead of writing it. Used to preserve ordering while earlier messages are still waiting to be replayed.
+	 */
+	public void logToBackLog(int level, String message) {
+		if (this.syslogConfig.isUseStructuredData()) {
+			StructuredSyslogMessageIF structuredMessage = new StructuredSyslogMessage(null,null,message);
+
+			logProcessed(getStructuredMessageProcessor(),level,structuredMessage.createMessage(),true);
+
+		} else {
+			logProcessed(getMessageProcessor(),level,message,true);
+		}
+	}
+
+	/**
+	 * Writes a message that was already prepared (ident prefix, modifiers, structured wrapping) when it was handed to a
+	 * backLog handler; re-running {@link #log(int, String)} on it would prefix and wrap it a second time.
+	 */
+	public void logPrepared(int level, String preparedMessage) {
+		SyslogMessageProcessorIF processor = this.syslogConfig.isUseStructuredData() ? getStructuredMessageProcessor() : getMessageProcessor();
+
+		writeOrBackLog(processor,level,preparedMessage);
+	}
+
+	private void logProcessed(SyslogMessageProcessorIF messageProcessor, int level, String message, boolean backLogOnly) {
 		String _message = null;
 		
 		if (this.syslogConfig.isIncludeIdentInMessageModifier()) {
@@ -222,6 +251,15 @@ public abstract class AbstractSyslog implements SyslogIF {
 			_message = prefixMessage(_message,IDENT_SUFFIX_DEFAULT);
 		}
 		
+		if (backLogOnly) {
+			backLog(level,_message,"earlier messages are still waiting to be replayed");
+			return;
+		}
+
+		writeOrBackLog(messageProcessor,level,_message);
+	}
+
+	private void writeOrBackLog(SyslogMessageProcessorIF messageProcessor, int level, String _message) {
 		try {
 			write(messageProcessor, level,_message);
 			

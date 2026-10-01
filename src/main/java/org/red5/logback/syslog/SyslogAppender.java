@@ -18,7 +18,9 @@ import org.red5.syslog.Syslog;
 import org.red5.syslog.SyslogFacility;
 import org.red5.syslog.SyslogIF;
 import org.red5.syslog.SyslogLevel;
+import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogConfig;
+import org.red5.syslog.impl.backlog.RingBufferBackLogHandler;
 import org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig;
 import org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig;
 import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
@@ -45,12 +47,14 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private int queueSize = 4096;
     private boolean blockWhenFull;
     private long shutdownTimeoutMs = 2000;
+    private int backlogSize = 1000;
 
     private static final AtomicLong COUNTER = new AtomicLong();
 
     private PatternLayout layout;
     private PatternLayout stackTraceLayout;
     private SyslogIF syslog;
+    private RingBufferBackLogHandler backlog;
     private String instanceName;
 
     /** State of one start/stop cycle; an old writer only ever sees its own generation, so a restart cannot revive it. */
@@ -97,6 +101,14 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             if (appName != null && !appName.isEmpty()) {
                 cfg.setIdent(appName);
             }
+            cfg.setThrowExceptionOnWrite(false);  // failures go to the backlog handlers, never into the logging path
+            backlog = null;
+            if (backlogSize > 0) {
+                backlog = new RingBufferBackLogHandler(backlogSize);
+                cfg.addBackLogHandler(backlog);
+                // one reconnect covers a stale persistent connection; more only multiplies connect timeouts while the server is down
+                cfg.setWriteRetries(1);
+            }
             // the Syslog registry is JVM-static and case-insensitive, so the name must be unique per appender
             instanceName = "red5-" + (getName() != null ? getName() + "-" : "") + COUNTER.incrementAndGet();
             syslog = Syslog.createInstance(instanceName, cfg);
@@ -130,6 +142,9 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         }
         if (shutdownTimeoutMs < 0) {
             return "shutdownTimeoutMs must not be negative: " + shutdownTimeoutMs;
+        }
+        if (backlogSize < 0) {
+            return "backlogSize must not be negative: " + backlogSize;
         }
         if (maxMessageLength <= 0) {
             return "maxMessageLength must be positive: " + maxMessageLength;
@@ -334,16 +349,44 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             }
             int level = toSyslogLevel(event.getLevel()).code();
             for (String line : splitLines(msgLayout.doLayout(withoutThrowable(event)))) {
-                out.log(level, line);
+                emit(out, level, line);
             }
             if (!throwableExcluded && exLayout != null && event.getThrowableProxy() != null) {
                 for (String line : splitLines(exLayout.doLayout(event))) {
-                    out.log(level, line);
+                    emit(out, level, line);
                 }
             }
         } catch (RuntimeException e) {
             reportFailure("syslog write failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * Writes one line. While the backlog holds earlier messages they are replayed first, so order is kept; the ported
+     * syslog only signals recovery after the write that succeeded, which would put the new line ahead of the backlog.
+     * If the replay fails again the destination is still down, so the line goes straight to the backlog without
+     * another connect attempt.
+     */
+    private void emit(SyslogIF out, int level, String line) {
+        RingBufferBackLogHandler h = backlog;
+        if (h != null && out instanceof AbstractSyslog as && h.size() > 0) {
+            if (!h.replay(as::logPrepared)) {
+                as.logToBackLog(level, line);
+                return;
+            }
+        }
+        out.log(level, line);
+    }
+
+    /** The underlying syslog instance of the current start, or null; for tests. */
+    SyslogIF syslogInstance() {
+        return syslog;
+    }
+
+    /** Number of messages currently waiting in the backlog; for tests. */
+    int backlogSize() {
+        RingBufferBackLogHandler h = backlog;
+        return h == null ? 0 : h.size();
     }
 
     static SyslogLevel toSyslogLevel(Level l) {
@@ -456,6 +499,13 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setSync(boolean v) { this.sync = v; }
     public void setQueueSize(int v) { this.queueSize = v; }
     public void setBlockWhenFull(boolean v) { this.blockWhenFull = v; }
+    /**
+     * Number of formatted messages kept in memory while the syslog server cannot be reached (default 1000, newest kept
+     * when full); they are replayed in order once a write succeeds again. 0 disables the backlog. Applies to the
+     * connection-oriented protocols (TCP, TLS, UNIX socket). UDP has no connection, so an unreachable server is
+     * silent loss: datagrams are sent without any acknowledgement and are never backlogged or replayed.
+     */
+    public void setBacklogSize(int v) { this.backlogSize = v; }
     /** Maximum time stop() waits for queued events to be written; 0 means do not wait. Must not be negative. */
     public void setShutdownTimeoutMs(long v) { this.shutdownTimeoutMs = v; }
 }
