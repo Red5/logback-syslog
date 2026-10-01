@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
@@ -17,6 +19,8 @@ import org.red5.syslog.testsupport.TestKeystore;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.joran.JoranConfigurator;
+import ch.qos.logback.classic.util.LogbackMDCAdapter;
 import ch.qos.logback.core.status.Status;
 
 /** Appender-level TLS: private SSLContext per appender, no JVM-wide javax.net.ssl.* state. Ports 15180-15189. */
@@ -189,6 +193,44 @@ class SyslogAppenderTlsTest {
             assertNotNull(m, "with sslVerifyHostname=false a trusted certificate for another name is accepted");
             assertTrue(m.contains("insecure-ok"), m);
             a.stop();
+        }
+    }
+
+    @Test
+    void tlsConfiguredFromJoranXmlDelivers(@TempDir Path dir) throws Exception {
+        Path ks = TestKeystore.create(dir, "changeit");
+        Map<String, String> before = sslProps();
+        String xml = """
+                <configuration>
+                  <appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender">
+                    <syslogHost>localhost</syslogHost>
+                    <port>15186</port>
+                    <protocol>TLS</protocol>
+                    <suffixPattern>%msg</suffixPattern>
+                    <sslTrustStore>STORE</sslTrustStore>
+                    <sslTrustStorePassword>changeit</sslTrustStorePassword>
+                    <sslVerifyHostname>true</sslVerifyHostname>
+                  </appender>
+                  <root level="INFO"><appender-ref ref="SYSLOG"/></root>
+                </configuration>
+                """.replace("STORE", ks.toString());
+        try (CapturingServer s = tlsServer(15186, ks)) {
+            LoggerContext ctx = new LoggerContext();
+            ctx.setMDCAdapter(new LogbackMDCAdapter());
+            JoranConfigurator jc = new JoranConfigurator();
+            jc.setContext(ctx);
+            jc.doConfigure(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+            SyslogAppender a = (SyslogAppender) ctx.getLogger(Logger.ROOT_LOGGER_NAME).getAppender("SYSLOG");
+            assertNotNull(a);
+            assertTrue(a.isStarted(), ctx.getStatusManager().getCopyOfStatusList().toString());
+            ctx.getLogger("t.Xml").info("tls-from-xml");
+            String m = s.poll(5000);
+            assertNotNull(m, "TLS delivery configured from XML");
+            assertTrue(m.contains("tls-from-xml"), m);
+            ctx.stop();
+            assertEquals(before, sslProps());
+            assertTrue(ctx.getStatusManager().getCopyOfStatusList().stream().noneMatch(st -> st.getMessage().contains("changeit")),
+                    "the store password must not appear in any status message");
         }
     }
 
