@@ -83,13 +83,16 @@ Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
 - **UDP:** `DatagramChannel` per instance. Messages over `maxMessageLength`
   (default 1024 for RFC 3164, 2048 for RFC 5424) are truncated, or split when
   `splitMessageBeforeSend` is enabled.
-- **TCP:** `SocketChannel`. Newline framing for RFC 3164, octet-counting for
-  RFC 5424. Keep-alive and optional `persistConnection`. A failed write triggers
+- **TCP:** `SocketChannel`. LF-delimited framing in both RFC 3164 and RFC 5424
+  modes (RFC 6587 non-transparent framing; octet-counting is not implemented).
+  Keep-alive and optional `persistConnection`. A failed write triggers
   one reconnect attempt, then the message goes to the backlog.
 - **TLS:** the TCP implementation over an `SSLSocketFactory`. Configurable
   keystore and truststore paths and passwords. Hostname verification on by default.
-- **Unix socket:** `SocketChannel` over `UnixDomainSocketAddress`, default path
-  `/dev/log`, datagram or stream per config. No JNA.
+- **Unix socket:** stream `SocketChannel` over `UnixDomainSocketAddress`, default
+  path `/dev/log`, LF-terminated frames. No JNA. JDK 21 has no unix datagram
+  channel, so datagram-only listeners (journald, default rsyslog `/dev/log`)
+  are not supported; requesting a datagram type fails with a clear error.
 - **Multiple:** fan-out over several `SyslogIF` instances; each fails independently.
 - **Pooled TCP:** bounded `ArrayBlockingQueue` of connections, keeping the original
   pool settings (max active, max wait).
@@ -144,8 +147,15 @@ syslog severity, and sent through the configured `SyslogIF`.
   `maxMessageLength`.
 - Additional: `protocol`, `unixSocketPath`, `rfc5424`, `appName`, `queueSize`,
   `sync`, overflow policy, TLS store settings, backlog selection.
-- Structured data via nested `<structuredData>` elements; modifiers via
-  `<modifier class="...">`, using Joran nested-component support.
+- Structured data via nested `<structuredData>` elements
+  (`<id>`, then `<entry><name/><value/></entry>`; Joran ignores attributes on
+  nested components); modifiers via `<modifier class="...">`, using Joran
+  nested-component support. Only modifiers with a public no-arg constructor
+  and setters are loadable from XML (Prefix, Suffix, HTMLEntityEscape).
+- RFC 5424 mode: no structured data is sent as NILVALUE `-`; messages are
+  truncated rather than split; timestamps carry at most 6 fractional digits;
+  the default `maxMessageLength` is 2048 (1024 in RFC 3164 mode). For UDP the
+  effective limit is capped at 65507 bytes.
 
 ## 10. Retained but off the appender path
 
