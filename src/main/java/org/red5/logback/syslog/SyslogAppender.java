@@ -30,6 +30,7 @@ import org.red5.syslog.SyslogFacility;
 import org.red5.syslog.SyslogIF;
 import org.red5.syslog.SyslogLevel;
 import org.red5.syslog.SyslogMessageIF;
+import org.red5.syslog.SyslogConstants;
 import org.red5.syslog.SyslogMessageModifierIF;
 import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogConfig;
@@ -41,6 +42,7 @@ import org.red5.syslog.impl.message.structured.StructuredSyslogMessage;
 import org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig;
 import org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig;
 import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
+import org.red5.syslog.impl.unix.socket.UnixDatagramSocket;
 import org.red5.syslog.impl.unix.socket.UnixSocketSyslogConfig;
 
 /**
@@ -71,6 +73,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private String appName;
     private boolean rfc5424;
     private String unixSocketPath = "/dev/log";
+    private UnixSocketType unixSocketType = UnixSocketType.DATAGRAM;
     private String sslKeyStore, sslKeyStorePassword, sslTrustStore, sslTrustStorePassword;
     private boolean sslVerifyHostname = true;
     private boolean sync;
@@ -310,6 +313,13 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             if (unixSocketPath == null || unixSocketPath.isBlank()) {
                 return "unixSocketPath must not be empty for protocol UNIX";
             }
+            if (unixSocketType == null) {
+                return "unixSocketType must not be null for protocol UNIX";
+            }
+            if (unixSocketType == UnixSocketType.DATAGRAM && !UnixDatagramSocket.isAvailable()) {
+                return "unix datagram sockets are unavailable: " + UnixDatagramSocket.unavailableReason()
+                        + "; use unixSocketType STREAM, or UDP/TCP to 127.0.0.1";
+            }
         } else {
             if (syslogHost == null || syslogHost.isEmpty()) {
                 return "syslogHost must not be empty";
@@ -505,6 +515,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             case UNIX -> {
                 UnixSocketSyslogConfig c = new UnixSocketSyslogConfig();
                 c.setPath(unixSocketPath);
+                c.setType(unixSocketType == UnixSocketType.STREAM ? SyslogConstants.SOCK_STREAM : SyslogConstants.SOCK_DGRAM);
                 return c;
             }
             default -> throw new IllegalArgumentException("protocol " + protocol);
@@ -918,7 +929,19 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
      * framing), not octet-counted.
      */
     public void setRfc5424(boolean v) { this.rfc5424 = v; }
+    /** Path of the unix socket for protocol UNIX (default /dev/log; on macOS the local syslog socket is /var/run/syslog). */
     public void setUnixSocketPath(String v) { this.unixSocketPath = v; }
+    /**
+     * Socket type for protocol UNIX (default DATAGRAM). DATAGRAM sends one datagram per message; /dev/log (journald,
+     * rsyslog) and /var/run/syslog (macOS) are datagram sockets. STREAM writes newline-terminated messages on a stream
+     * connection, for stream listeners such as syslog-ng unix-stream. DATAGRAM calls libc through java.lang.foreign
+     * (used reflectively: a preview API in JDK 21, final from JDK 22, no flag needed); the JDK prints a one-time warning
+     * about a restricted method unless the JVM runs with {@code --enable-native-access=ALL-UNNAMED}. DATAGRAM works on
+     * Linux and macOS; Windows is unsupported. If it is unavailable the appender does not start and reports why. Must
+     * not be null.
+     */
+    public void setUnixSocketType(UnixSocketType v) { this.unixSocketType = v; }
+    public UnixSocketType getUnixSocketType() { return unixSocketType; }
     public void setSslKeyStore(String v) { this.sslKeyStore = v; }
     public void setSslKeyStorePassword(String v) { this.sslKeyStorePassword = v; }
     public void setSslTrustStore(String v) { this.sslTrustStore = v; }
@@ -937,7 +960,8 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
      * when full); they are replayed in order once the destination answers again. 0 disables the backlog (failed writes
      * are then counted as dropped). Evicted messages and those still waiting at stop() count as dropped. Replayed
      * messages carry the replay time in the syslog header timestamp; use %d in suffixPattern when the exact event time
-     * matters. Applies to the connection-oriented protocols (TCP, TLS, UNIX socket). A UDP send that throws an IOException is backlogged and
+     * matters. Applies to the protocols that report a missing receiver: TCP, TLS and UNIX (stream, and datagram, where a
+     * missing, full or vanished local receiver fails the send). A UDP send that throws an IOException is backlogged and
      * replayed too, but UDP gives no delivery feedback, so an unreachable UDP listener usually means silent loss
      * rather than a backlog.
      */
