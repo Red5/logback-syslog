@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reliability - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html" class="current">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 6: Reliability</h1>
+
+<p>Logging must never make the application slower or fail. The appender is designed around that: logging calls
+hand the event to a queue and return, a single background thread does the network work, and anything that cannot be
+delivered is either kept in a bounded backlog or counted as dropped. This chapter describes what happens at each
+step and which status messages tell you about it.</p>
+
+<svg class="diagram" viewBox="0 0 760 250" role="img" aria-labelledby="dg-t dg-d" xmlns="http://www.w3.org/2000/svg">
+<title id="dg-t">How an event travels from the application to the syslog server</title>
+<desc id="dg-d">The application thread hands events to a bounded queue. A writer thread takes them from the queue, replays any backlog first, and sends them over the transport to the syslog server. Events that cannot be sent go to the backlog.</desc>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="box" x="10" y="20" width="130" height="64" rx="6"/>
+<text x="75" y="48" text-anchor="middle">Application</text>
+<text x="75" y="66" text-anchor="middle" class="small">log.info(...)</text>
+<rect class="box" x="190" y="20" width="140" height="64" rx="6"/>
+<text x="260" y="48" text-anchor="middle">Bounded queue</text>
+<text x="260" y="66" text-anchor="middle" class="small">queueSize = 4096</text>
+<rect class="box" x="380" y="20" width="140" height="64" rx="6"/>
+<text x="450" y="48" text-anchor="middle">Writer thread</text>
+<text x="450" y="66" text-anchor="middle" class="small">format, split, send</text>
+<rect class="box" x="570" y="20" width="180" height="64" rx="6"/>
+<text x="660" y="48" text-anchor="middle">Transport</text>
+<text x="660" y="66" text-anchor="middle" class="small">UDP / TCP / TLS / UNIX</text>
+<rect class="accent" x="190" y="150" width="140" height="64" rx="6"/>
+<text x="260" y="178" text-anchor="middle">Dropped</text>
+<text x="260" y="196" text-anchor="middle" class="small">counted, reported</text>
+<rect class="accent" x="380" y="150" width="140" height="64" rx="6"/>
+<text x="450" y="178" text-anchor="middle">Backlog</text>
+<text x="450" y="196" text-anchor="middle" class="small">backlogSize = 1000</text>
+<rect class="box" x="570" y="150" width="180" height="64" rx="6"/>
+<text x="660" y="178" text-anchor="middle">Syslog server</text>
+<text x="660" y="196" text-anchor="middle" class="small">collector, rsyslog, ...</text>
+<path class="arrow" d="M140,52 L188,52" marker-end="url(#ah)"/>
+<path class="arrow" d="M330,52 L378,52" marker-end="url(#ah)"/>
+<path class="arrow" d="M520,52 L568,52" marker-end="url(#ah)"/>
+<path class="arrow" d="M660,84 L660,148" marker-end="url(#ah)"/>
+<path class="arrow" d="M260,84 L260,148" marker-end="url(#ah)"/>
+<text x="268" y="122" class="small">queue full</text>
+<path class="arrow" d="M450,84 L450,148" marker-end="url(#ah)"/>
+<text x="458" y="122" class="small">send failed</text>
+<path class="arrow" d="M520,184 L568,184" marker-end="url(#ah)" stroke-dasharray="5,3"/>
+<text x="523" y="176" class="small">replay</text>
+</svg>
+
+<h2>The asynchronous queue</h2>
+<p>By default (<code>sync</code> is false) the logging call formats nothing and does no I/O: it captures the event
+(thread name, MDC and so on) and puts it on a bounded queue of <code>queueSize</code> events. One daemon
+thread named <code>red5-syslog-&lt;appender name&gt;</code> takes events off the queue in order, formats them,
+and sends them.</p>
+<h3>When the queue is full</h3>
+<ul>
+<li><code>blockWhenFull=false</code> (default): the new event is discarded and counted. The logging call returns
+immediately. The first discard, and then at most one more every 10 seconds, produces a warning in
+Logback's status output: <em>syslog queue full; N events dropped so far</em>.</li>
+<li><code>blockWhenFull=true</code>: the logging call waits until there is room. This loses nothing, but a slow
+or unreachable server will then slow the application down. Use it only when completeness matters more than
+latency.</li>
+</ul>
+<p>A queue that fills up usually means the server (or the network path to it) cannot keep up. Raising
+<code>queueSize</code> buys time but not throughput; each queued event holds its message in memory.</p>
+
+<h2>When the server cannot be reached</h2>
+<p>With TCP, TLS or unix sockets, a failed connect or write moves the message to the <em>backlog</em>: a ring
+buffer of <code>backlogSize</code> formatted messages (default 1000). The appender then reports the problem once
+(an error in the status output, at most one every 10 seconds, for example <em>syslog destination unavailable:
+ConnectException: Connection refused</em>).</p>
+<p>It keeps trying to reconnect, but not on every event: after a failure it waits 1 second, then 2, 4, 8, and so
+on up to 30 seconds between attempts, and starts again from 1 second after a success. While it waits, messages go
+straight into the backlog. If the backlog is full, the <em>oldest</em> message is evicted and counted as dropped.</p>
+<p>When the server answers again, the backlog is replayed <em>in order, before any newer message</em>, and the
+appender records <em>syslog destination recovered; replayed N backlogged messages</em>. Replayed messages carry the
+time of the replay in their syslog header; see <a href="formats.html">Chapter 5</a> for adding the original time to
+the text.</p>
+<p>Set <code>backlogSize</code> to 0 to disable the backlog. Failed messages are then counted as dropped
+immediately.</p>
+<div class="note"><strong>UDP</strong><p>UDP has no connection and no delivery feedback, so a stopped server cannot be detected: the datagrams
+are simply lost, and nothing is backlogged or counted. Use TCP or TLS when messages must not be lost. A UDP
+send that fails locally (for example, network unreachable) is backlogged and replayed like any other failure.</p></div>
+
+<h2>The dropped counter</h2>
+<p>Every event that is not delivered is accounted for: delivered, still waiting in the backlog, or counted in
+<code>getDroppedCount()</code>. The counter includes events discarded when the queue was full, backlog messages
+that were evicted, messages that could not be written with no backlog, and anything still queued or in the backlog
+when the appender stopped. One event that produces several syslog messages (a stack trace, for example) counts as one
+while it is queued and as its individual messages once it is in the backlog.</p>
+
+<h2>Shutdown</h2>
+<p>When Logback stops the appender (at context shutdown, or when a web application is undeployed), it:</p>
+<ul>
+<li>stops accepting events,</li>
+<li>waits up to <code>shutdownTimeoutMs</code> (default 2 seconds) for the writer to send what is queued, with 0 meaning
+do not wait,</li>
+<li>if the writer is still blocked on the network after that, aborts the connection so that the thread ends, and</li>
+<li>counts whatever is left, then records one warning with the total: <em>syslog appender [SYSLOG] stopped; N events
+dropped in total (M while stopping); K messages were still in the backlog</em>. Nothing is logged if the total is zero.</li>
+</ul>
+<p>Stopping an appender twice, logging after it has stopped, and starting it again on the same context are all
+safe. The backlog does not survive a stop: it is in memory only.</p>
+
+<h2>Synchronous mode</h2>
+<p><code>sync=true</code> sends on the calling thread, with no queue. Delivery is simpler to reason about, but every
+logging call waits for the network, and with TCP or TLS a stalled server stalls the application. Replay of a
+backlog then happens on the next logging call. Prefer the default.</p>
+
+<h2>Status messages</h2>
+<table>
+<tr><th>Level</th><th>Message</th><th>Meaning</th></tr>
+<tr><td>ERROR</td><td><code>syslog appender [NAME] not started: &hellip;</code></td><td>A property is invalid; the appender is inactive and discards events. Fix the configuration.</td></tr>
+<tr><td>ERROR</td><td><code>syslog destination unavailable: &hellip;</code></td><td>A write or connect failed. Messages are being backlogged. Rate limited to one per 10 seconds.</td></tr>
+<tr><td>INFO</td><td><code>syslog destination recovered; replayed N backlogged messages</code></td><td>The server is back and the backlog was sent.</td></tr>
+<tr><td>WARN</td><td><code>syslog queue full; N events dropped so far</code></td><td>The queue overflowed. Rate limited to one per 10 seconds.</td></tr>
+<tr><td>WARN</td><td><code>syslog appender [NAME]: maxMessageLength N lowered to 65507 (UDP datagram limit)</code>, or <code>(unix datagram limit)</code></td><td>The configured length is larger than one datagram may carry.</td></tr>
+<tr><td>WARN</td><td><code>syslog appender [NAME]: local syslog daemons reading /dev/log (journald, rsyslog) do not parse RFC 5424 &hellip;</code></td><td><code>rfc5424</code> is set with a unix datagram socket; use RFC 3164 for <code>/dev/log</code>.</td></tr>
+<tr><td>WARN</td><td><code>syslog appender [NAME] stopped; N events dropped in total &hellip;</code></td><td>Events were lost during the appender's life; see the counter above.</td></tr>
+</table>
+<p>To see these messages, add <code>debug="true"</code> to <code>&lt;configuration&gt;</code>, or register a
+<code>StatusListener</code>. Logback's <code>OnConsoleStatusListener</code> prints them to the console.</p>
+
+<div class="pager"><span><a href="formats.html">&laquo; Chapter 5: Message formats</a></span><span><a href="library.html">Chapter 7: The syslog library &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

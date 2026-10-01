@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.red5</groupId>
+  <artifactId>red5-logback-syslog</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <name>Red5 Logback Syslog</name>
+  <licenses>
+    <license><name>LGPL-2.1</name><url>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html</url></license>
+  </licenses>
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <logback.version>1.5.26</logback.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <junit.version>5.11.4</junit.version>
+  </properties>
+  <dependencies>
+    <dependency><groupId>ch.qos.logback</groupId><artifactId>logback-classic</artifactId><version>${logback.version}</version><scope>provided</scope></dependency>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>${slf4j.version}</version><scope>provided</scope></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${junit.version}</version><scope>test</scope></dependency>
+  </dependencies>
+  <build>
+    <resources>
+      <resource><directory>src/main/resources</directory><filtering>false</filtering></resource>
+      <resource><directory>${project.basedir}</directory><includes><include>LICENSE.txt</include></includes><targetPath>META-INF</targetPath></resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version>
+      </plugin>
+      <plugin>
+        <artifactId>maven-jar-plugin</artifactId><version>3.4.2</version>
+        <configuration>
+          <archive><manifestEntries><Automatic-Module-Name>org.red5.syslog</Automatic-Module-Name></manifestEntries></archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

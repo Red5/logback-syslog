@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Red5 Logback Syslog manual - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html" class="current">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Red5 Logback Syslog manual</h1>
+
+<p>This manual describes <em>Red5 Logback Syslog</em>, a single jar that adds a
+<a href="https://logback.qos.ch/">Logback</a> appender for
+<a href="https://www.rfc-editor.org/rfc/rfc5424">syslog</a> to Red5. The appender is built on a
+modernized copy of the <a href="http://www.syslog4j.org/">syslog4j</a> client and server, repackaged
+under <code>org.red5</code>, so it carries the syslog4j feature set without an extra dependency.</p>
+<p>Applications log through <a href="https://www.slf4j.org/">SLF4J</a> as usual; this project only
+changes where Logback sends the events.</p>
+<h2>Contents</h2>
+<ol>
+<li><a href="introduction.html">Introduction</a> &mdash; What the project is, how it relates to Logback's SyslogAppender and the papertrail appender, requirements and license.</li>
+<li><a href="getting-started.html">Getting started</a> &mdash; Adding the jar, a first <code>logback.xml</code>, and checking that messages arrive.</li>
+<li><a href="configuration.html">Appender configuration</a> &mdash; Every appender property, with types and defaults, and nested <code>modifier</code> and <code>structuredData</code> elements.</li>
+<li><a href="transports.html">Transports and TLS</a> &mdash; UDP, TCP, TLS and unix sockets, trust stores, and host name verification.</li>
+<li><a href="formats.html">Message formats</a> &mdash; RFC 3164 and RFC 5424 output, severities and facilities, stack traces, message length and truncation.</li>
+<li><a href="reliability.html">Reliability</a> &mdash; The asynchronous queue, overflow policies, the backlog, reconnect backoff, shutdown and the status messages you will see.</li>
+<li><a href="library.html">The syslog library</a> &mdash; Using the <code>org.red5.syslog</code> client directly and running the bundled syslog server.</li>
+<li><a href="troubleshooting.html">Troubleshooting and limitations</a> &mdash; Common problems, how to read Logback's status output, and the known limitations.</li>
+</ol>
+<div class="note"><strong>Where to start</strong><p>If you already use Logback's own <code>SyslogAppender</code>, read the <a href="introduction.html#migrating">migration notes</a>. Otherwise begin with <a href="getting-started.html">Chapter 2</a>.</p></div>
+
+
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

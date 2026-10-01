@@ -12,7 +12,7 @@ syslog4j 0.9.46 client and server feature set, repackaged under `org.red5`.
 Success criteria:
 - One jar, runtime dependencies limited to `logback-classic` and `slf4j-api` (both `provided`).
 - JDK 21 minimum (`release=21`).
-- Existing papertrail `logback.xml` appender configs work with only the class name changed.
+- Existing `logback.xml` configs for Logback's built-in `SyslogAppender` work with only the class name changed. Configs for the papertrail `Syslog4jAppender` (nested `<layout>` and `<syslogConfig>`) do not: they are migrated by mapping settings to flat properties (see the manual, chapter 1). Accepting the papertrail nested form is a possible follow-up.
 - The logging path never blocks request threads and never throws.
 - All syslog4j features are present except the log4j integration.
 
@@ -48,9 +48,11 @@ and moves away from the reference).
 Modernization rules:
 - Generics, enums for facility and level, records where a type is a plain value.
 - `java.util.Base64` replaces the bundled `Base64.java`.
-- `UnixDomainSocketAddress` (JDK 16+) replaces JNA.
+- `UnixDomainSocketAddress` (JDK 16+, stream) and reflective `java.lang.foreign` (datagram) replace JNA.
 - A small internal bounded connection pool replaces commons-pool.
-- Virtual threads for the server and async send.
+- Platform threads for the async writer (one daemon thread per appender) and the
+  server listeners: the ported writers synchronize around blocking socket I/O, which
+  pins a virtual thread's carrier on JDK 21 (JDK 24+, JEP 491, would lift this).
 - No log4j or `LogLog` references; diagnostics go through Logback `Context` status.
 - Imports instead of fully qualified names; consistent with existing Red5 code style.
 
@@ -64,7 +66,7 @@ org.red5.syslog.impl                 AbstractSyslog, AbstractSyslogConfig
 org.red5.syslog.impl.net.udp
 org.red5.syslog.impl.net.tcp         + pool (internal bounded pool)
 org.red5.syslog.impl.net.tcp.ssl
-org.red5.syslog.impl.unix            UnixDomainSocketAddress based
+org.red5.syslog.impl.unix            stream: UnixDomainSocketAddress; datagram: reflective java.lang.foreign
 org.red5.syslog.impl.multiple
 org.red5.syslog.impl.message         structured, pci, modifier.*, processor
 org.red5.syslog.impl.backlog         handlers, print-stream
@@ -80,16 +82,39 @@ Test dependencies: JUnit 5.
 
 Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
 
-- **UDP:** `DatagramChannel` per instance. Messages over `maxMessageLength`
+- **UDP:** `java.net.DatagramSocket` per instance. Messages over `maxMessageLength`
   (default 1024 for RFC 3164, 2048 for RFC 5424) are truncated, or split when
   `splitMessageBeforeSend` is enabled.
-- **TCP:** `SocketChannel`. Newline framing for RFC 3164, octet-counting for
-  RFC 5424. Keep-alive and optional `persistConnection`. A failed write triggers
+- **TCP:** `java.net.Socket`. LF-delimited framing in both RFC 3164 and RFC 5424
+  modes (RFC 6587 non-transparent framing; octet-counting is not implemented).
+  Keep-alive and optional `persistConnection`. A failed write triggers
   one reconnect attempt, then the message goes to the backlog.
-- **TLS:** the TCP implementation over an `SSLSocketFactory`. Configurable
-  keystore and truststore paths and passwords. Hostname verification on by default.
-- **Unix socket:** `SocketChannel` over `UnixDomainSocketAddress`, default path
-  `/dev/log`, datagram or stream per config. No JNA.
+- **TLS:** the TCP implementation with TLS layered over the connected socket.
+  Configurable keystore and truststore paths and passwords. Each client and server
+  instance builds a private `SSLContext` from its own stores (platform default trust
+  managers when no truststore is set) and never reads or sets the JVM-wide
+  `javax.net.ssl.*` properties. Hostname verification is on by default (the
+  configured host name is used for SNI and endpoint identification); the
+  `sslVerifyHostname` property turns it off, which is insecure. The handshake is
+  bounded by the connect timeout.
+- **Unix socket:** default path `/dev/log`, no JNA, two types. Datagram (the
+  default, `SOCK_DGRAM`; what `/dev/log` is for journald and rsyslog, and
+  `/var/run/syslog` on macOS): one datagram per message, no framing, through
+  `UnixDatagramSocket`, which calls libc `socket`/`connect`/`send`/`close`
+  through `java.lang.foreign` by reflection (preview in JDK 21, final in 22+;
+  no compile-time preview dependency, no `--enable-preview`). Sends use
+  `MSG_DONTWAIT` and never block; errno is captured with
+  `Linker.Option.captureCallState("errno")` and reported by name and
+  `strerror` text. Available on Linux and macOS/BSD (macOS layout untested)
+  with a 64-bit JVM that has `java.lang.foreign` and allows native access;
+  Windows and other systems are unavailable, and selecting datagram there fails
+  at initialization with the reason and the alternatives (stream, or UDP/TCP to
+  `127.0.0.1`). The JDK prints a one-time restricted-method warning unless the
+  JVM runs with `--enable-native-access=ALL-UNNAMED` (`--enable-native-access=org.red5.syslog` when the jar is on the module path). Stream (`SOCK_STREAM`):
+  `SocketChannel` over `UnixDomainSocketAddress`, LF-terminated frames. Both
+  connect lazily and reconnect after a failure; failures go to the backlog. The
+  appender selects the type with `unixSocketType` (`DATAGRAM` default, `STREAM`)
+  and omits the host name from UNIX frames unless `sendLocalName` is set.
 - **Multiple:** fan-out over several `SyslogIF` instances; each fails independently.
 - **Pooled TCP:** bounded `ArrayBlockingQueue` of connections, keeping the original
   pool settings (max active, max wait).
@@ -98,19 +123,30 @@ Each transport implements `SyslogIF` on top of a small `AbstractSyslog` base.
 
 - `doAppend` must not block Red5 request threads.
 - Default is async: events go on a bounded queue (`queueSize`, default 4096)
-  drained by a single virtual-thread writer.
+  drained by a single platform daemon thread per appender (see section 4).
 - Overflow policy: `discardWhenFull` (default, drops and counts) or `blockWhenFull`.
 - `sync` flag bypasses the queue.
-- `stop()` drains the queue up to `shutdownTimeoutMs`, then closes transports.
-- The ported server runs its listeners on virtual threads, one per TCP connection.
+- `stop()` drains the queue up to `shutdownTimeoutMs`, then closes transports; a
+  writer still blocked in socket I/O is released by closing its socket without
+  taking the writer's lock.
+- The ported server runs its listeners on platform threads, one per TCP connection
+  (off the appender path).
 
 ## 8. Errors and backlog
 
 - The appender never throws into the logging path.
-- Failures are reported through Logback `addError`, rate-limited.
-- Failed messages go to the configured backlog handler. Default is a bounded
-  in-memory ring buffer replayed on reconnect. The print-stream handler remains
-  available as an alternative.
+- Failures are reported through Logback `addError`, rate-limited: an outage is one
+  ERROR status per window, the recovery an INFO status with the replayed count.
+- Failed messages go to a bounded in-memory ring buffer (`backlogSize`, default
+  1000, 0 disables it) replayed in order on reconnect. The other library backlog
+  handlers (print-stream and others) remain available programmatically but are not
+  selectable from XML.
+- While the destination is down, reconnects back off: after a failed write or
+  replay no connection is attempted for 1 s, doubling to at most 30 s, reset on
+  success; lines arriving meanwhile go straight to the backlog.
+- Every lost message is counted in the dropped count (queue overflow, stop,
+  backlog eviction, backlog leftovers at stop, failed writes without a backlog)
+  and the total is reported in the stop warning.
 - Configuration is validated in `start()`. Invalid config calls `addError` and
   leaves the appender inactive instead of throwing.
 
@@ -139,13 +175,20 @@ syslog severity, and sent through the configured `SyslogIF`.
 </appender>
 ```
 
-- Papertrail-compatible names: `syslogHost`, `port`, `facility`, `suffixPattern`,
+- Names shared with Logback's built-in `SyslogAppender`: `syslogHost`, `port`, `facility`, `suffixPattern`,
   `stackTracePattern`, `throwableExcluded`, `sendLocalName`, `sendLocalTimestamp`,
   `maxMessageLength`.
-- Additional: `protocol`, `unixSocketPath`, `rfc5424`, `appName`, `queueSize`,
-  `sync`, overflow policy, TLS store settings, backlog selection.
-- Structured data via nested `<structuredData>` elements; modifiers via
-  `<modifier class="...">`, using Joran nested-component support.
+- Additional: `protocol`, `unixSocketPath`, `unixSocketType`, `rfc5424`, `appName`, `queueSize`,
+  `sync`, overflow policy, TLS store settings, `sslVerifyHostname`, `backlogSize`.
+- Structured data via nested `<structuredData>` elements
+  (`<id>`, then `<entry><name/><value/></entry>`; Joran ignores attributes on
+  nested components); modifiers via `<modifier class="...">`, using Joran
+  nested-component support. Only modifiers with a public no-arg constructor
+  and setters are loadable from XML (Prefix, Suffix, HTMLEntityEscape).
+- RFC 5424 mode: no structured data is sent as NILVALUE `-`; messages are
+  truncated rather than split; timestamps carry at most 6 fractional digits;
+  the default `maxMessageLength` is 2048 (1024 in RFC 3164 mode). For UDP the
+  effective limit is capped at 65507 bytes.
 
 ## 10. Retained but off the appender path
 

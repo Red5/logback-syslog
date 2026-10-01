@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting and limitations - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html" class="current">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 8: Troubleshooting and limitations</h1>
+
+<h2>The appender does not start</h2>
+<p>The appender validates its settings when it starts. If one is invalid it records an error and stays inactive; no
+events are sent and nothing is thrown into your application. Look for a line of this form in the status output (enable
+<code>debug="true"</code>):</p>
+<pre><code>ERROR in org.red5.logback.syslog.SyslogAppender[SYSLOG] - syslog appender [SYSLOG] not started: port out of range 1..65535: 0</code></pre>
+
+<p>The checks are: a non-empty <code>suffixPattern</code> (and <code>stackTracePattern</code> unless
+<code>throwableExcluded</code>); a positive <code>queueSize</code>; a non-negative <code>shutdownTimeoutMs</code> and
+<code>backlogSize</code>; a <code>maxMessageLength</code> of at least 128; a non-empty host and a port from 1 to 65535
+(for <code>UNIX</code>: a non-empty <code>unixSocketPath</code>, a non-null <code>unixSocketType</code>, and for
+<code>DATAGRAM</code> that unix datagram sockets are available); for TLS, a trust store or key store; and for
+<code>rfc5424</code> a valid <code>appName</code> and valid <code>structuredData</code> (ids and names 1 to 32 printable ASCII
+characters without space, <code>=</code>, <code>]</code> or <code>"</code>; ids unique).</p>
+<p>For TLS the trust store and key store files are loaded at start, so a wrong path or password shows up here too, as
+<em>not started: File does not exist &hellip;</em> or a keystore error.</p>
+<p>A misspelled property name or an unknown <code>modifier</code> class is reported by Logback itself, as an error
+about a missing setter or class, and the appender starts without it.</p>
+
+<h2>Messages are missing</h2>
+<ul>
+<li><strong>UDP:</strong> a datagram to a stopped or unreachable server is lost silently. Switch to TCP to detect and
+recover from outages.</li>
+<li><strong>The logger level.</strong> The appender receives only what Logback's logger levels let through. Check the
+root and logger levels.</li>
+<li><strong>Queue full.</strong> Look for <em>syslog queue full</em> warnings and read
+<code>getDroppedCount()</code> (<a href="reliability.html">Chapter 6</a>).</li>
+<li><strong>The receiver truncates or drops long lines.</strong> Many collectors limit message size. Lower
+<code>maxMessageLength</code> to what yours accepts.</li>
+<li><strong>The program name or facility is not what the server filters on.</strong> Check <code>facility</code> and
+<code>appName</code>; rsyslog and syslog-ng route on both.</li>
+<li><strong>The timestamp is in the wrong time zone.</strong> RFC 3164 timestamps carry no time zone: the receiver
+interprets them. RFC 5424 timestamps include the offset.</li>
+</ul>
+
+<h2>TLS problems</h2>
+<table>
+<tr><th>Status message contains</th><th>Cause</th></tr>
+<tr><td><code>No subject alternative DNS name matching &hellip; found</code></td><td>The certificate does not list <code>syslogHost</code>. Use a name that is in the certificate, or reissue it.</td></tr>
+<tr><td><code>PKIX path building failed</code></td><td>The trust store does not contain the server's issuer. Import the certificate chain, or use a trust store that has it.</td></tr>
+<tr><td><code>Remote host terminated the handshake</code>, or a timeout</td><td>The port does not speak TLS (a plain TCP port was used), or the server requires a client certificate (set <code>sslKeyStore</code>).</td></tr>
+</table>
+
+<h2>Unix socket does not work</h2>
+<p>The status output names the cause, with the system error:</p>
+<table>
+<tr><th>Message contains</th><th>Cause and fix</th></tr>
+<tr><td><code>unix datagram sockets are unavailable</code></td><td>The appender did not start: the platform (for example Windows) or the JVM does not allow datagram sockets. If the reason is <code>IllegalCallerException</code>, native access is restricted: start the JVM with <code>--enable-native-access=ALL-UNNAMED</code>, or <code>--enable-native-access=org.red5.syslog</code> when the jar is on the module path. Otherwise use <code>unixSocketType</code> <code>STREAM</code>, or UDP or TCP to <code>127.0.0.1</code>.</td></tr>
+<tr><td><code>ENOENT</code></td><td>Nothing exists at <code>unixSocketPath</code>: the daemon is not running or uses another path (<code>/var/run/syslog</code> on macOS).</td></tr>
+<tr><td><code>ECONNREFUSED</code></td><td>The path exists but nobody is reading it: a stale socket file, or not a socket at all.</td></tr>
+<tr><td><code>EPROTOTYPE</code></td><td>The daemon listens on a stream socket. Set <code>unixSocketType</code> to <code>STREAM</code>.</td></tr>
+<tr><td><code>EACCES</code></td><td>The application's user may not write to the socket.</td></tr>
+<tr><td><code>EAGAIN</code> or <code>ENOBUFS</code></td><td>The daemon's receive buffer is full; messages wait in the backlog and are replayed.</td></tr>
+</table>
+<p>If messages arrive but <code>journalctl -t</code> does not find them under your <code>appName</code>, check that
+<code>sendLocalName</code> is not set to true: a host name in the header is read as the tag. See
+<a href="transports.html#unix">Chapter 4</a>.</p>
+<p>If the journal shows the process as <code>java</code> and the message starts with <code>1</code> and a timestamp,
+<code>rfc5424</code> is set: journald and rsyslog's <code>/dev/log</code> input do not parse RFC 5424. For
+<code>/dev/log</code> use RFC 3164 (the default); use <code>rfc5424</code> with network collectors or stream listeners
+that parse it.</p>
+
+<h2>Frequently asked questions</h2>
+<h3>Does the appender block my application when the syslog server is down?</h3>
+<p>Not with the default settings: events go to a queue and a background thread handles the network. With
+<code>blockWhenFull=true</code> or <code>sync=true</code> it can.</p>
+<h3>Can I use several appenders?</h3>
+<p>Yes: for example one UDP appender for a local daemon and one TLS appender for a remote service, each with its own
+name, queue and backlog. They share nothing.</p>
+<h3>Is the order of messages preserved?</h3>
+<p>Yes, per appender: events are sent in the order they were logged, and a replayed backlog goes out before newer
+messages. UDP itself does not guarantee ordering on the network.</p>
+<h3>Which Logback and Java versions are supported?</h3>
+<p>Java 21 or later, Logback 1.5.x and SLF4J 2.x.</p>
+<h3>Can I add the time of the event to a replayed message?</h3>
+<p>Yes: include <code>%d</code> in <code>suffixPattern</code>. See <a href="formats.html">Chapter 5</a>.</p>
+
+<h2>Known limitations</h2>
+<ul>
+<li><strong>Unix datagram sockets need native access</strong> through <code>java.lang.foreign</code> (a preview API in
+Java 21, used reflectively, so no flag is needed). The JDK prints a one-time warning unless the JVM runs with
+<code>--enable-native-access=ALL-UNNAMED</code> (<code>--enable-native-access=org.red5.syslog</code> on the module
+path). They work on Linux and macOS only (macOS untested); Windows is unsupported.</li>
+<li><strong>The local syslog daemons do not parse RFC 5424</strong> on <code>/dev/log</code>; use RFC 3164 there.</li>
+<li><strong>TCP framing is LF-delimited.</strong> Octet-counted framing (RFC 6587) is not implemented, so a receiver that accepts only
+octet-counted frames cannot read the stream.</li>
+<li><strong>TLS needs a trust or key store configured.</strong> To use the Java default trust (public authorities), point
+<code>sslTrustStore</code> at <code>cacerts</code>.</li>
+<li><strong>Stopping a TLS appender against a peer that has stopped reading</strong> can take about 2.5 seconds
+longer than <code>shutdownTimeoutMs</code>, because closing a TLS socket waits briefly for the blocked write.</li>
+<li><strong>Replayed messages carry the replay time</strong> in their syslog header (see <a href="formats.html">Chapter 5</a>).</li>
+<li><strong>The backlog is in memory</strong> and is lost when the application stops.</li>
+<li><strong>The host name is resolved once.</strong> A UDP target whose address changes needs an appender restart.</li>
+<li>Only the prefix, suffix and HTML-escape modifiers can be configured in XML.</li>
+</ul>
+<p>The project's issue tracker is at <a href="https://github.com/Red5/logback-syslog">github.com/Red5/logback-syslog</a>.</p>
+
+<div class="pager"><span><a href="library.html">&laquo; Chapter 7: The syslog library</a></span><span><a href="index.html">Contents &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

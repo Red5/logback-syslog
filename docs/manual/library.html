@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The syslog library - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html" class="current">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 7: The syslog library</h1>
+
+<p>The jar contains the whole syslog4j feature set under <code>org.red5.syslog</code>. You can use it without Logback
+to send syslog messages from any code, to run a syslog server (for example in tests), or to build a message pipeline
+with modifiers. The appender itself is a thin layer over this library.</p>
+
+<h2>Sending messages</h2>
+<p>Build a configuration object for the transport, create an instance, and log through it:</p>
+<pre><code>import org.red5.syslog.Syslog;
+import org.red5.syslog.SyslogIF;
+import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
+
+UDPNetSyslogConfig config = new UDPNetSyslogConfig();
+config.setHost("logs.example.com");
+config.setPort(514);
+config.setFacility("LOCAL0");
+config.setIdent("red5");
+
+SyslogIF syslog = Syslog.createInstance("red5", config);
+syslog.info("stream started");
+syslog.error("publish failed");
+// ...
+Syslog.destroyInstance("red5");</code></pre>
+<p>The transports are selected by the configuration class:</p><table>
+<tr><th>Class</th><th>Transport</th></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.net.udp.UDPNetSyslogConfig</code></td><td>UDP</td></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig</code></td><td>TCP</td></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig</code></td><td>TLS (<code>setTrustStore</code>, <code>setKeyStore</code>, <code>setSslVerifyHostname</code>)</td></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.unix.socket.UnixSocketSyslogConfig</code></td><td>Unix socket (<code>setPath</code>; <code>setType</code>: <code>SOCK_DGRAM</code>, the default, or <code>SOCK_STREAM</code>)</td></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.net.tcp.pool.PooledTCPNetSyslogConfig</code></td><td>TCP with a pool of connections</td></tr>
+<tr><td class="prop"><code>org.red5.syslog.impl.multiple.MultipleSyslogConfig</code></td><td>Fan-out to several destinations; each fails independently</td></tr>
+</table>
+
+<p>The static registry also provides default instances by protocol name, as in syslog4j:
+<code>Syslog.getInstance("udp")</code> and <code>Syslog.getInstance("tcp")</code> return ready-made instances
+that you configure through <code>getConfig()</code>. The Logback appender does not use the registry, so the two do not
+interfere.</p>
+
+<h3>Modifiers and structured messages</h3>
+<p>Message modifiers can be added in code, including those that cannot be configured from XML:</p>
+<pre><code>config.addMessageModifier(new PrefixSyslogMessageModifier("[r5]"));
+config.addMessageModifier(new SequentialSyslogMessageModifier(new SequentialSyslogMessageModifierConfig()));</code></pre>
+
+<p>The available modifiers are in <code>org.red5.syslog.impl.message.modifier</code>: <code>text</code> (prefix, suffix,
+case), <code>sequential</code>, <code>checksum</code>, <code>hash</code>, <code>mac</code> and <code>escape</code>.
+Structured (RFC 5424) messages are built with <code>StructuredSyslogMessage</code>, and PCI-style messages with
+<code>PCISyslogMessage</code>, both under <code>org.red5.syslog.impl.message</code>.</p>
+
+<h2>Running a syslog server</h2>
+<p>The jar includes UDP, TCP and TLS syslog servers. From the command line:</p>
+<pre><code>java -cp red5-logback-syslog-1.0.0-SNAPSHOT.jar \
+     org.red5.syslog.server.SyslogServerMain -h 0.0.0.0 -p 5140 -o received.log tcp</code></pre>
+
+<table>
+<tr><th>Option</th><th>Meaning</th></tr>
+<tr><td><code>-h &lt;host&gt;</code></td><td>Host or address to bind.</td></tr>
+<tr><td><code>-p &lt;port&gt;</code></td><td>Port to bind.</td></tr>
+<tr><td><code>-t &lt;timeout&gt;</code></td><td>Socket timeout in milliseconds.</td></tr>
+<tr><td><code>-o &lt;file&gt;</code></td><td>Write received messages to this file (overwritten, unless <code>-a</code>).</td></tr>
+<tr><td><code>-a</code></td><td>Append to the file instead of overwriting.</td></tr>
+<tr><td><code>-q</code></td><td>Do not print to standard output.</td></tr>
+</table>
+<p>The last argument is the protocol, <code>udp</code> or <code>tcp</code>. In this option set, <code>-h</code> is the host
+(not help). A matching command-line client sends one message: <code>org.red5.syslog.SyslogMain -h host -p port
+&lt;protocol&gt; message...</code>.</p>
+<p>In code, create a server with an event handler:</p>
+<pre><code>UDPNetSyslogServerConfig cfg = new UDPNetSyslogServerConfig();
+cfg.setHost("0.0.0.0");
+cfg.setPort(5140);
+cfg.addEventHandler(new SyslogServerSessionlessEventHandlerIF() {
+    public void event(SyslogServerIF server, SocketAddress from, SyslogServerEventIF event) {
+        System.out.println(event.getHost() + " " + event.getMessage());
+    }
+    public void exception(SyslogServerIF server, SocketAddress from, Exception e) { e.printStackTrace(); }
+    public void initialize(SyslogServerIF server) { }
+    public void destroy(SyslogServerIF server) { }
+});
+SyslogServerIF server = SyslogServer.createThreadedInstance("udp-5140", cfg);
+// ...
+SyslogServer.destroyInstance("udp-5140");</code></pre>
+
+<p>TCP servers use <code>TCPNetSyslogServerConfig</code> and the session handler
+<code>SyslogServerSessionEventHandlerIF</code> (with <code>sessionOpened</code> and <code>sessionClosed</code>); TLS servers use
+<code>SSLTCPNetSyslogServerConfig</code>, which takes a key store and password.</p>
+
+<h2>Differences from syslog4j 0.9.46</h2>
+<table>
+<tr><th>Area</th><th>Change</th></tr>
+<tr><td>Packages</td><td><code>org.productivity.java.syslog4j</code> is now <code>org.red5.syslog</code>; class names are unchanged.</td></tr>
+<tr><td>log4j</td><td>The log4j appender and back-log handler are not included. Use the Logback appender.</td></tr>
+<tr><td>Unix sockets</td><td>JNA is gone. Datagram sockets (the default type, which <code>/dev/log</code> is) call the C library through <code>java.lang.foreign</code>, used reflectively, on Linux and macOS; stream sockets use the JDK's own support. If datagram sockets are unavailable (for example on Windows) <code>initialize()</code> fails with the reason, and the default <code>unix_syslog</code> and <code>unix_socket</code> instances are not registered. The <code>unix_syslog</code> protocol, which called libc through JNA, now uses the same socket implementation as <code>unix_socket</code>.</td></tr>
+<tr><td>Connection pool</td><td>Apache Commons Pool is replaced by a small bounded pool. Only the maximum active connections and the maximum wait are used; the idle, eviction and test settings are accepted and ignored.</td></tr>
+<tr><td>TLS</td><td>Each instance has its own TLS context; the <code>javax.net.ssl.*</code> system properties are never read or changed. Host name verification is on by default (<code>setSslVerifyHostname</code>), and connecting and the handshake are bounded by <code>setConnectTimeoutMillis</code> (default 3000).</td></tr>
+<tr><td>Dates</td><td>Joda-Time is replaced by <code>java.time</code>. <code>StructuredSyslogServerEvent.getDateTime()</code> returns an <code>OffsetDateTime</code>, and RFC 5424 timestamps are printed with at most six fractional digits.</td></tr>
+<tr><td>Base64</td><td>The bundled encoder is replaced by <code>java.util.Base64</code>.</td></tr>
+<tr><td>Fixes</td><td>A failing UDP send is retried the configured number of times and then reported; the original loop never ended. Truncation no longer cuts through a multi-byte UTF-8 character.</td></tr>
+</table>
+
+<div class="pager"><span><a href="reliability.html">&laquo; Chapter 6: Reliability</a></span><span><a href="troubleshooting.html">Chapter 8: Troubleshooting and limitations &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

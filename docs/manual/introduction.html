@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Introduction - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html" class="current">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 1: Introduction</h1>
+
+<p>Syslog is the standard way for Unix-like systems, network devices and log services to collect
+log messages. Logback ships a <code>SyslogAppender</code>, but it speaks only UDP, always uses the
+older RFC 3164 format, and sends from the thread that logs. This project provides an appender with
+the same basic properties and adds the transports, formats and delivery guarantees that production
+servers tend to need.</p>
+
+<h2>What you get</h2>
+<ul>
+<li><strong>Transports:</strong> UDP, TCP, TLS (with host name verification) and unix domain sockets.
+See <a href="transports.html">Chapter 4</a>.</li>
+<li><strong>Formats:</strong> RFC 3164 and RFC 5424, including structured data, plus a set of
+message modifiers. See <a href="formats.html">Chapter 5</a>.</li>
+<li><strong>Delivery behaviour you can rely on:</strong> logging calls do not block, events that
+cannot be sent are kept in a bounded backlog and replayed in order, reconnects back off, and every lost
+event is counted. See <a href="reliability.html">Chapter 6</a>.</li>
+<li><strong>One jar:</strong> the syslog4j client, message layer and server are included, repackaged under
+<code>org.red5.syslog</code>. The only dependencies are Logback and SLF4J, which Red5 already provides.
+See <a href="library.html">Chapter 7</a>.</li>
+</ul>
+
+<h2>Requirements</h2>
+<table>
+<tr><th>Component</th><th>Version</th></tr>
+<tr><td>Java</td><td>21 or later</td></tr>
+<tr><td>Logback</td><td>1.5.x (<code>logback-classic</code>)</td></tr>
+<tr><td>SLF4J</td><td>2.x (<code>slf4j-api</code>)</td></tr>
+</table>
+<p>Logback and SLF4J are declared with <code>provided</code> scope: the jar does not bundle them.</p>
+
+<h2>Relationship to other projects</h2>
+<p><strong>Logback's SyslogAppender.</strong> The core appender properties use the same names as
+<code>ch.qos.logback.classic.net.SyslogAppender</code>: <code>syslogHost</code>, <code>port</code>,
+<code>facility</code>, <code>suffixPattern</code>, <code>stackTracePattern</code> and
+<code>throwableExcluded</code>.</p>
+<p><strong>The papertrail appender.</strong> <code>com.papertrailapp.logback.Syslog4jAppender</code>
+(papertrail/logback-syslog4j) wraps syslog4j in a Logback appender. This project offers the same
+capability, with the syslog4j classes included in the jar, but it is configured with flat properties
+rather than a nested <code>syslogConfig</code> element. The mapping is shown below.</p>
+<p><strong>syslog4j.</strong> The library is a port of syslog4j 0.9.46. Nothing is lost except the
+log4j integration. The package names and a few details differ; they are listed in
+<a href="library.html">Chapter 7</a>.</p>
+
+<h2 id="migrating">Migrating</h2>
+<h3>From Logback's SyslogAppender</h3>
+<p>Change the class name. The existing properties keep their meaning.</p>
+<div class="filename">logback.xml</div><pre><code>&lt;appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender"&gt;
+  &lt;syslogHost&gt;logs.example.com&lt;/syslogHost&gt;
+  &lt;port&gt;514&lt;/port&gt;
+  &lt;facility&gt;LOCAL0&lt;/facility&gt;
+  &lt;suffixPattern&gt;[%thread] %logger %msg&lt;/suffixPattern&gt;
+&lt;/appender&gt;</code></pre>
+
+<h3>From the papertrail Syslog4jAppender</h3>
+<p>The papertrail appender takes a nested <code>layout</code> and <code>syslogConfig</code>. Translate
+them to flat properties as follows.</p>
+<table>
+<tr><th>papertrail</th><th>Red5 Logback Syslog</th></tr>
+<tr><td><code>syslogConfig class=&hellip;SSLTCPNetSyslogConfig</code></td><td><code>&lt;protocol&gt;TLS&lt;/protocol&gt;</code></td></tr>
+<tr><td><code>syslogConfig class=&hellip;TCPNetSyslogConfig</code></td><td><code>&lt;protocol&gt;TCP&lt;/protocol&gt;</code></td></tr>
+<tr><td><code>syslogConfig class=&hellip;UDPNetSyslogConfig</code></td><td><code>&lt;protocol&gt;UDP&lt;/protocol&gt;</code> (the default)</td></tr>
+<tr><td><code>&lt;host&gt;</code></td><td><code>&lt;syslogHost&gt;</code></td></tr>
+<tr><td><code>&lt;port&gt;</code></td><td><code>&lt;port&gt;</code></td></tr>
+<tr><td><code>&lt;ident&gt;</code></td><td><code>&lt;appName&gt;</code></td></tr>
+<tr><td><code>&lt;maxMessageLength&gt;</code></td><td><code>&lt;maxMessageLength&gt;</code> (UDP is capped at 65507 bytes, see <a href="formats.html#length">Chapter 5</a>)</td></tr>
+<tr><td><code>&lt;layout&gt;&hellip;&lt;pattern&gt;</code></td><td><code>&lt;suffixPattern&gt;</code> for the message, <code>&lt;stackTracePattern&gt;</code> for exceptions</td></tr>
+</table>
+<div class="filename">logback.xml</div><pre><code>&lt;appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender"&gt;
+  &lt;syslogHost&gt;logs.example.com&lt;/syslogHost&gt;
+  &lt;port&gt;6514&lt;/port&gt;
+  &lt;protocol&gt;TLS&lt;/protocol&gt;
+  &lt;appName&gt;my-app&lt;/appName&gt;
+  &lt;maxMessageLength&gt;128000&lt;/maxMessageLength&gt;
+  &lt;sslTrustStore&gt;/etc/red5/syslog-truststore.p12&lt;/sslTrustStore&gt;
+  &lt;sslTrustStorePassword&gt;changeit&lt;/sslTrustStorePassword&gt;
+  &lt;suffixPattern&gt;%-5level %logger{35}: %m&lt;/suffixPattern&gt;
+&lt;/appender&gt;</code></pre>
+<div class="note"><strong>Layout pattern differences</strong><p>The papertrail example uses <code>%-5level %logger{35}: %m%n%xEx</code>. Here
+<code>suffixPattern</code> is the text of one syslog message, so leave out <code>%n</code> and the exception
+converters: the appender splits multi-line text into separate syslog messages itself and sends
+exceptions separately through <code>stackTracePattern</code>. See
+<a href="formats.html#stacktraces">Stack traces</a>.</p></div>
+
+<h2>License</h2>
+<p>syslog4j is licensed under the GNU Lesser General Public License, version 2.1, and this project is a
+derivative work. The original copyright and license notices are retained in the ported source files,
+and the license text is included in the jar as <code>META-INF/LICENSE.txt</code>.</p>
+
+<div class="pager"><span><a href="index.html">&laquo; Contents</a></span><span><a href="getting-started.html">Chapter 2: Getting started &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>

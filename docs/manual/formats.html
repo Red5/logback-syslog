@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Message formats - Red5 Logback Syslog</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="banner"><div class="inner">
+<h1><a href="index.html">Red5 Logback Syslog</a></h1>
+<p>A Logback appender that logs to syslog, with the syslog4j feature set in a single jar for JDK 21+</p>
+</div></div>
+<div class="layout">
+<nav class="toc"><h2>Manual</h2><ul><li><a href="index.html">Contents</a></li><li><a href="introduction.html">1. Introduction</a></li><li><a href="getting-started.html">2. Getting started</a></li><li><a href="configuration.html">3. Appender configuration</a></li><li><a href="transports.html">4. Transports and TLS</a></li><li><a href="formats.html" class="current">5. Message formats</a></li><li><a href="reliability.html">6. Reliability</a></li><li><a href="library.html">7. The syslog library</a></li><li><a href="troubleshooting.html">8. Troubleshooting and limitations</a></li></ul></nav>
+<main>
+<h1 class="chapter">Chapter 5: Message formats</h1>
+
+<p>The appender can send the traditional BSD format (RFC 3164, the default) or the structured format of
+RFC 5424. Both carry a priority, which is computed from the facility and the event's level.</p>
+
+<h2>Severities and facilities</h2>
+<p>The priority is <em>facility &times; 8 + severity</em>. Logback levels map to syslog severities like this:</p>
+<table>
+<tr><th>Logback level</th><th>Syslog severity</th></tr>
+<tr><td><code>ERROR</code></td><td>3 (err)</td></tr>
+<tr><td><code>WARN</code></td><td>4 (warning)</td></tr>
+<tr><td><code>INFO</code></td><td>6 (info)</td></tr>
+<tr><td><code>DEBUG</code>, <code>TRACE</code></td><td>7 (debug)</td></tr>
+</table>
+
+<p>Facility names and their numbers are the standard ones (<code>USER</code> is 1, <code>LOCAL0</code> is 16, and so
+on up to <code>LOCAL7</code> at 23).</p>
+
+<h2>RFC 3164 (default)</h2>
+<p>The frame is <code>&lt;PRI&gt;TIMESTAMP HOST TAG: MESSAGE</code>. The timestamp and host name are included unless
+you set <code>sendLocalTimestamp</code> or <code>sendLocalName</code> to false, and <code>appName</code> supplies the tag.
+For protocol <code>UNIX</code> the host name is omitted by default (<code>sendLocalName</code> defaults to false there),
+giving <code>&lt;PRI&gt;TIMESTAMP TAG: MESSAGE</code> as glibc's <code>syslog()</code> writes to the local socket.</p>
+<pre><code>&lt;134&gt;Oct  1 09:17:11 red5host red5: [main] org.red5.server.Demo stream started</code></pre>
+
+<h2>RFC 5424</h2>
+<p>Set <code>&lt;rfc5424&gt;true&lt;/rfc5424&gt;</code>. The frame is
+<code>&lt;PRI&gt;1 TIMESTAMP HOST APP-NAME PROCID MSGID STRUCTURED-DATA MESSAGE</code>:</p>
+<ul>
+<li>The timestamp is ISO 8601 with an offset and at most six fractional digits.</li>
+<li><code>APP-NAME</code> is <code>appName</code> (<code>-</code> if unset). <code>PROCID</code> and <code>MSGID</code> are always <code>-</code>.</li>
+<li><code>STRUCTURED-DATA</code> is built from the <code>structuredData</code> elements, or is <code>-</code> when none are configured.</li>
+<li>The timestamp and host name are always sent, so <code>sendLocalName</code> and <code>sendLocalTimestamp</code> do not apply.</li>
+</ul>
+<p>With this configuration:</p>
+<pre><code>&lt;appender name="SYSLOG" class="org.red5.logback.syslog.SyslogAppender"&gt;
+  &lt;syslogHost&gt;127.0.0.1&lt;/syslogHost&gt;
+  &lt;port&gt;514&lt;/port&gt;
+  &lt;facility&gt;LOCAL0&lt;/facility&gt;
+  &lt;rfc5424&gt;true&lt;/rfc5424&gt;
+  &lt;appName&gt;red5&lt;/appName&gt;
+  &lt;suffixPattern&gt;%logger %msg&lt;/suffixPattern&gt;
+  &lt;structuredData&gt;
+    &lt;id&gt;meta@32473&lt;/id&gt;
+    &lt;entry&gt;&lt;name&gt;app&lt;/name&gt;&lt;value&gt;live&lt;/value&gt;&lt;/entry&gt;
+  &lt;/structuredData&gt;
+&lt;/appender&gt;</code></pre>
+<p>the message from <a href="getting-started.html">Chapter 2</a> becomes:</p><pre><code>&lt;134&gt;1 2026-10-01T09:17:22.726761-07:00 red5host red5 - - [meta@32473 app="live"] org.red5.server.Demo stream started</code></pre>
+
+<h2 id="stacktraces">Stack traces and multi-line text</h2>
+<p>Syslog messages are single lines, so the appender never sends a line break inside a message:</p>
+<ul>
+<li>The text produced by <code>suffixPattern</code> is split at line breaks into separate syslog messages (blank lines are skipped).</li>
+<li>Exceptions are rendered with <code>stackTracePattern</code> and sent after the log message, one syslog message per line.
+For example <code>%ex{short}</code> sends only the first lines, and <code>%rEx</code> prints the root cause first.</li>
+<li>Throwable converters in <code>suffixPattern</code> (<code>%ex</code>, <code>%xEx</code>, <code>%rEx</code> and the like) print nothing, so a stack trace is never sent twice.</li>
+<li>Set <code>throwableExcluded</code> to true to send only the log message.</li>
+</ul>
+<p>Every line of one event repeats the same priority, header and (in RFC 5424) structured data. This is what the
+two-line exception in <a href="getting-started.html">Chapter 2</a> looks like in RFC 5424 mode:</p>
+<pre><code>&lt;131&gt;1 2026-10-01T09:17:22.729268-07:00 red5host red5 - - [meta@32473 app="live"] org.red5.server.Demo publish failed
+&lt;131&gt;1 2026-10-01T09:17:22.729888-07:00 red5host red5 - - [meta@32473 app="live"] java.lang.IllegalStateException: no codec
+&lt;131&gt;1 2026-10-01T09:17:22.730017-07:00 red5host red5 - - [meta@32473 app="live"] 	at org.red5.server.Demo.main(Demo.java:12)</code></pre>
+
+<h2 id="length">Message length</h2>
+<p><code>maxMessageLength</code> is the size in bytes of one syslog message <em>including its header</em>, between 128
+and the transport's limit. The default is 1024 for RFC 3164 and 2048 for RFC 5424. What happens to a longer message
+depends on the format:</p>
+<table>
+<tr><th>Mode</th><th>Behaviour</th></tr>
+<tr><td>RFC 3164</td><td>The message is split into several syslog messages, each marked at the join with <code>...</code>.</td></tr>
+<tr><td>RFC 5424</td><td>The message is truncated to fit (RFC 5424 section 6.1), at a UTF-8 character boundary. Splitting would repeat the header fields in the middle of a message, so it is not done.</td></tr>
+</table>
+
+<p>For UDP and for unix datagram sockets (<code>UNIX</code> with <code>unixSocketType</code> <code>DATAGRAM</code>)
+the limit cannot exceed 65507 bytes, the largest UDP datagram; a larger value is lowered with a warning, so an
+oversized datagram can never block the backlog.
+Receivers often have limits of their own, commonly 1024 to 8192 bytes, so a value above what your collector
+accepts only moves the truncation to the other side.</p>
+
+<h2>Replayed messages</h2>
+<p>A message that was backlogged while the server was unreachable is replayed with the <em>replay</em> time in its
+header. If the exact event time matters, add <code>%d</code> to <code>suffixPattern</code> (for example
+<code>%d{ISO8601} %logger %msg</code>) so the original time is part of the message text.</p>
+
+<div class="pager"><span><a href="transports.html">&laquo; Chapter 4: Transports and TLS</a></span><span><a href="reliability.html">Chapter 6: Reliability &raquo;</a></span></div>
+</main>
+</div>
+<footer>Red5 Logback Syslog manual. The library is a derivative of syslog4j 0.9.46 and is distributed under the GNU Lesser General Public License, version 2.1.</footer>
+</body>
+</html>
