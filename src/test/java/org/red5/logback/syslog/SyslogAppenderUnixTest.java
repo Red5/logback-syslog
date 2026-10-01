@@ -102,6 +102,41 @@ class SyslogAppenderUnixTest {
     }
 
     @Test
+    @EnabledOnOs(OS.LINUX)
+    void localFramesOmitTheHostnameUnlessSendLocalNameIsSet() throws Exception {
+        assumeDatagram();
+        // the local socket format is <PRI>TIMESTAMP TAG: MSG; a hostname there would be taken as the tag
+        String local = "<134>[A-Z][a-z]{2} [ \\d]\\d \\d{2}:\\d{2}:\\d{2} unixapp: ";
+        try (UnixDatagramServer server = UnixDatagramServer.bind(dir.resolve("host.sock"))) {
+            String m = sendOne(server, null, "no-host");
+            assertTrue(m.matches(local + "no-host"), m);
+            m = sendOne(server, true, "with-host");
+            assertTrue(m.matches("<134>[A-Z][a-z]{2} [ \\d]\\d \\d{2}:\\d{2}:\\d{2} \\S+ unixapp: with-host"), m);
+            assertFalse(m.matches(local + "with-host"), m);
+        }
+    }
+
+    private String sendOne(UnixDatagramServer server, Boolean sendLocalName, String text) throws Exception {
+        LoggerContext ctx = context();
+        SyslogAppender a = unix(ctx, server.path());
+        a.setSync(true);
+        if (sendLocalName != null) {
+            a.setSendLocalName(sendLocalName);
+        }
+        a.start();
+        Logger l = ctx.getLogger("t.Host");
+        l.addAppender(a);
+        try {
+            l.info(text);
+            String m = server.poll(5000);
+            assertNotNull(m);
+            return m;
+        } finally {
+            a.stop();
+        }
+    }
+
+    @Test
     @EnabledOnOs({ OS.LINUX, OS.MAC })
     void streamTypeStillWorks() throws Exception {
         LoggerContext ctx = context();

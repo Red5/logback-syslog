@@ -68,6 +68,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private String stackTracePattern = "%ex{full}";
     private boolean throwableExcluded;
     private boolean sendLocalName = true;
+    private boolean sendLocalNameSet;
     private boolean sendLocalTimestamp = true;
     private int maxMessageLength;
     private String appName;
@@ -201,7 +202,8 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             facilityCode = fac.code();
             cfg.setFacility(fac.code());
             cfg.setThreaded(false);               // queueing is done by this appender
-            cfg.setSendLocalName(sendLocalName);
+            // local sockets expect <PRI>TIMESTAMP TAG: MSG; a hostname there would be read as the tag
+            cfg.setSendLocalName(sendLocalNameSet || protocol != Protocol.UNIX ? sendLocalName : false);
             cfg.setSendLocalTimestamp(sendLocalTimestamp);
             // a UDP datagram carries at most 65507 bytes: a larger limit would make an oversized datagram fail on send, and the
             // failed line would then sit at the head of the backlog and block every later line; capped, the ported splitter
@@ -908,8 +910,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setSuffixPattern(String v) { this.suffixPattern = v; }
     public void setStackTracePattern(String v) { this.stackTracePattern = v; }
     public void setThrowableExcluded(boolean v) { this.throwableExcluded = v; }
-    /** Ignored when rfc5424 is true: the RFC 5424 header always carries timestamp and hostname. */
-    public void setSendLocalName(boolean v) { this.sendLocalName = v; }
+    /**
+     * Whether the plain syslog header carries the local hostname. Default true, except for protocol UNIX, where it
+     * defaults to false: the local socket format is {@code <PRI>TIMESTAMP TAG: MSG}, and journald and rsyslog would take a
+     * hostname there for the tag. Ignored when rfc5424 is true: the RFC 5424 header always carries timestamp and hostname.
+     */
+    public void setSendLocalName(boolean v) { this.sendLocalName = v; this.sendLocalNameSet = true; }
     /** Ignored when rfc5424 is true: the RFC 5424 header always carries timestamp and hostname. */
     public void setSendLocalTimestamp(boolean v) { this.sendLocalTimestamp = v; }
     /**
