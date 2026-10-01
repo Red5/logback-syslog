@@ -4,17 +4,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.red5.syslog.Syslog;
 import org.red5.syslog.SyslogIF;
+import org.red5.syslog.impl.backlog.RingBufferBackLogHandler;
 import org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig;
 import org.red5.syslog.impl.net.tcp.ssl.SSLTCPNetSyslogConfig;
 import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
@@ -213,6 +220,48 @@ class TransportTest {
             }
         }
         assertEquals(before, sslProps());
+    }
+
+    @Test
+    void tlsHandshakeWithSilentPeerFailsWithinTimeoutAndIsBacklogged(@TempDir Path dir) throws Exception {
+        Path ks = TestKeystore.create(dir, "changeit");
+        try (ServerSocket silent = new ServerSocket(0, 5, InetAddress.getLoopbackAddress())) {
+            List<Socket> accepted = new CopyOnWriteArrayList<>();
+            Thread acceptor = Thread.ofPlatform().daemon().start(() -> {
+                try {
+                    while (true) {
+                        accepted.add(silent.accept());   // accept TCP, never speak TLS
+                    }
+                } catch (IOException ignored) {
+                    // closed
+                }
+            });
+            SSLTCPNetSyslogConfig c = new SSLTCPNetSyslogConfig();
+            c.setHost("127.0.0.1");
+            c.setPort(silent.getLocalPort());
+            c.setTrustStore(ks.toString());
+            c.setTrustStorePassword("changeit");
+            c.setConnectTimeoutMillis(500);
+            c.setWriteRetries(0);
+            c.setThreaded(false);   // write on the calling thread so the timing is measurable
+            RingBufferBackLogHandler backlog = new RingBufferBackLogHandler(10);
+            c.addBackLogHandler(backlog);
+            SyslogIF log = Syslog.createInstance("t-tls-silent", c);
+            try {
+                long t0 = System.nanoTime();
+                log.info("never");
+                long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+                assertTrue(ms < 3000, "handshake must time out after connectTimeoutMillis, took " + ms);
+                assertEquals(1, backlog.size(), "the message is backlogged, not lost");
+            } finally {
+                Syslog.destroyInstance("t-tls-silent");
+                silent.close();
+                acceptor.join(2000);
+                for (Socket a : accepted) {
+                    a.close();
+                }
+            }
+        }
     }
 
     private static Map<String, String> sslProps() {

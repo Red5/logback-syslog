@@ -25,6 +25,8 @@ public class PooledSSLTCPNetSyslogConfig extends PooledTCPNetSyslogConfig implem
 	protected String trustStore = null;
 	protected String trustStorePassword = null;
 
+	protected boolean sslVerifyHostname = true;
+
 	public PooledSSLTCPNetSyslogConfig() {
 		super();
 	}
@@ -79,6 +81,14 @@ public class PooledSSLTCPNetSyslogConfig extends PooledTCPNetSyslogConfig implem
 
 	public void setTrustStorePassword(String trustStorePassword) {
 		this.trustStorePassword = trustStorePassword;
+	}
+
+	public boolean isSslVerifyHostname() {
+		return this.sslVerifyHostname;
+	}
+
+	public void setSslVerifyHostname(boolean sslVerifyHostname) {
+		this.sslVerifyHostname = sslVerifyHostname;
 	}
 
 	public Class getSyslogClass() {

@@ -136,6 +136,58 @@ class SyslogAppenderTlsTest {
         }
     }
 
+    @Test
+    void matchingIpSanIsAccepted(@TempDir Path dir) throws Exception {
+        Path ks = TestKeystore.create(dir, "changeit");   // SAN dns:localhost,ip:127.0.0.1
+        LoggerContext ctx = new LoggerContext();
+        try (CapturingServer s = tlsServer(15183, ks)) {
+            SyslogAppender a = tlsAppender(ctx, "IP", "127.0.0.1", 15183, ks);
+            a.start();
+            Logger l = ctx.getLogger("t.Ip");
+            l.addAppender(a);
+            l.info("by-ip");
+            String m = s.poll(5000);
+            assertNotNull(m, "a certificate whose SAN matches the IP literal must be accepted");
+            assertTrue(m.contains("by-ip"), m);
+            a.stop();
+        }
+    }
+
+    @Test
+    void hostnameMismatchIsRejected(@TempDir Path dir) throws Exception {
+        Path ks = TestKeystore.create(dir, "other.jks", "changeit", "dns:other.example");
+        LoggerContext ctx = new LoggerContext();
+        try (CapturingServer s = tlsServer(15184, ks)) {
+            SyslogAppender a = tlsAppender(ctx, "MISMATCH", "localhost", 15184, ks);   // trusted, but issued for other.example
+            a.start();
+            assertTrue(a.isStarted());
+            Logger l = ctx.getLogger("t.Mismatch");
+            l.addAppender(a);
+            l.info("must-not-arrive");
+            assertNull(s.poll(1000), "a certificate for another host name must be rejected");
+            assertEquals(1, a.backlogSize(), "the rejected message waits in the backlog");
+            a.stop();
+        }
+    }
+
+    @Test
+    void hostnameMismatchIsAcceptedWhenVerificationIsDisabled(@TempDir Path dir) throws Exception {
+        Path ks = TestKeystore.create(dir, "other.jks", "changeit", "dns:other.example");
+        LoggerContext ctx = new LoggerContext();
+        try (CapturingServer s = tlsServer(15185, ks)) {
+            SyslogAppender a = tlsAppender(ctx, "NOVERIFY", "localhost", 15185, ks);
+            a.setSslVerifyHostname(false);
+            a.start();
+            Logger l = ctx.getLogger("t.NoVerify");
+            l.addAppender(a);
+            l.info("insecure-ok");
+            String m = s.poll(5000);
+            assertNotNull(m, "with sslVerifyHostname=false a trusted certificate for another name is accepted");
+            assertTrue(m.contains("insecure-ok"), m);
+            a.stop();
+        }
+    }
+
     private static void restore(Map<String, String> saved) {
         saved.forEach((k, v) -> {
             if (v == null) {

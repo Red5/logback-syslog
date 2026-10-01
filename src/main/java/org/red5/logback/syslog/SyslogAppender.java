@@ -52,6 +52,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private boolean rfc5424;
     private String unixSocketPath = "/dev/log";
     private String sslKeyStore, sslKeyStorePassword, sslTrustStore, sslTrustStorePassword;
+    private boolean sslVerifyHostname = true;
     private boolean sync;
     private int queueSize = 4096;
     private boolean blockWhenFull;
@@ -366,6 +367,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 c.setKeyStorePassword(sslKeyStorePassword);
                 c.setTrustStore(sslTrustStore);
                 c.setTrustStorePassword(sslTrustStorePassword);
+                c.setSslVerifyHostname(sslVerifyHostname);
                 return c;
             }
             case UNIX -> {
@@ -672,6 +674,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setSslKeyStorePassword(String v) { this.sslKeyStorePassword = v; }
     public void setSslTrustStore(String v) { this.sslTrustStore = v; }
     public void setSslTrustStorePassword(String v) { this.sslTrustStorePassword = v; }
+    /**
+     * TLS only: whether the server certificate must match {@code syslogHost} (default true). Setting it to false is
+     * INSECURE: any certificate from a trusted issuer is then accepted for any host, which allows man-in-the-middle
+     * attacks. Use it only for testing or when the trust store holds nothing but the one server certificate.
+     */
+    public void setSslVerifyHostname(boolean v) { this.sslVerifyHostname = v; }
     public void setSync(boolean v) { this.sync = v; }
     public void setQueueSize(int v) { this.queueSize = v; }
     public void setBlockWhenFull(boolean v) { this.blockWhenFull = v; }

@@ -22,6 +22,8 @@ public class SSLTCPNetSyslogConfig extends TCPNetSyslogConfig implements SSLTCPN
 	protected String trustStore = null;
 	protected String trustStorePassword = null;
 
+	protected boolean sslVerifyHostname = true;
+
 	public SSLTCPNetSyslogConfig() {
 		//
 	}
@@ -76,6 +78,14 @@ public class SSLTCPNetSyslogConfig extends TCPNetSyslogConfig implements SSLTCPN
 
 	public void setTrustStorePassword(String trustStorePassword) {
 		this.trustStorePassword = trustStorePassword;
+	}
+
+	public boolean isSslVerifyHostname() {
+		return this.sslVerifyHostname;
+	}
+
+	public void setSslVerifyHostname(boolean sslVerifyHostname) {
+		this.sslVerifyHostname = sslVerifyHostname;
 	}
 
 	public Class getSyslogClass() {

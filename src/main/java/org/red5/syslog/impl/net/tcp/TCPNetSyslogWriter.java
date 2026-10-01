@@ -82,7 +82,28 @@ public class TCPNetSyslogWriter extends AbstractSyslogWriter {
 			newSocket.setReuseAddress(true);
 		}
 		
-		return newSocket;
+		try {
+			return wrapSocket(newSocket);
+			
+		} catch (IOException | RuntimeException e) {
+			try {
+				newSocket.close();
+			} catch (IOException ignore) {
+				//
+			}
+			throw e;
+		}
+	}
+	
+	/**
+	 * Hook to layer a protocol (e.g. TLS) over the connected plain socket; the default returns it unchanged.
+	 * 
+	 * @param connectedSocket - a connected plain socket
+	 * @return the socket to write to
+	 * @throws IOException if layering fails; the caller closes the plain socket
+	 */
+	protected Socket wrapSocket(Socket connectedSocket) throws IOException {
+		return connectedSocket;
 	}
 	
 	protected Socket getSocket() throws SyslogRuntimeException {
