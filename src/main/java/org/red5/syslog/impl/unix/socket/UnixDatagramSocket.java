@@ -42,19 +42,25 @@ public final class UnixDatagramSocket implements Closeable {
 
     /** Constants that differ between the supported operating systems. */
     enum Platform {
-        /** sockaddr_un: sun_family (short, native order) at 0, sun_path from 2; 110 bytes in all. */
-        LINUX(0x40, 110, false),
-        /** macOS, FreeBSD, OpenBSD, NetBSD: sun_len (byte) at 0, sun_family (byte) at 1, sun_path from 2; 106 bytes in all. Untested. */
-        BSD(0x80, 106, true);
+        /** sockaddr_un: sun_family (short, native order) at 0, sun_path from 2; 110 bytes in all. SOCK_CLOEXEC 0x80000. */
+        LINUX(0x40, 110, false, 0x80000),
+        /**
+         * macOS, FreeBSD, OpenBSD, NetBSD: sun_len (byte) at 0, sun_family (byte) at 1, sun_path from 2; 106 bytes in all.
+         * No SOCK_CLOEXEC type flag (macOS lacks it). Untested.
+         */
+        BSD(0x80, 106, true, 0);
 
         final int msgDontWait;
+        /** Flag or-ed into the socket type so the descriptor is not inherited by exec'd children; 0 where unsupported. */
+        final int sockCloexec;
         final int sockaddrSize;
         /** Longest path in bytes: the path array less its terminating NUL. */
         final int maxPathBytes;
         private final boolean sunLen;
 
-        Platform(int msgDontWait, int sockaddrSize, boolean sunLen) {
+        Platform(int msgDontWait, int sockaddrSize, boolean sunLen, int sockCloexec) {
             this.msgDontWait = msgDontWait;
+            this.sockCloexec = sockCloexec;
             this.sockaddrSize = sockaddrSize;
             this.maxPathBytes = sockaddrSize - 2 - 1;
             this.sunLen = sunLen;
@@ -182,8 +188,7 @@ public final class UnixDatagramSocket implements Closeable {
                 } catch (ClassNotFoundException e) {
                     reason = "java.lang.foreign is not available in this JVM (" + System.getProperty("java.version") + ")";
                 } catch (Throwable t) {
-                    Throwable c = t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
-                    reason = "native access to libc failed: " + c;
+                    reason = failureReason(t);
                 }
             }
             NATIVE = n;
@@ -223,6 +228,18 @@ public final class UnixDatagramSocket implements Closeable {
         return "unsupported operating system: " + osName + " (Linux and macOS/BSD only)";
     }
 
+    /** The unavailable reason for a failure while binding libc. */
+    static String failureReason(Throwable t) {
+        Throwable c = t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+        String reason = "native access to libc failed: " + c;
+        if (c instanceof IllegalCallerException) {
+            // the JVM restricts native access (e.g. --enable-native-access names other modules, or a future default)
+            reason += "; start the JVM with --enable-native-access=ALL-UNNAMED (or --enable-native-access=org.red5.syslog"
+                    + " when the jar is on the module path)";
+        }
+        return reason;
+    }
+
     /** Test seam: makes {@link #isAvailable()} false with the given reason. */
     static void forceUnavailable(String reason) {
         forcedReason = Objects.requireNonNull(reason);
@@ -257,8 +274,8 @@ public final class UnixDatagramSocket implements Closeable {
             throw new IOException("unix socket path too long (" + p.length + " bytes, at most " + n.platform.maxPathBytes + "): " + path);
         }
         try (Native.Scope s = n.scope()) {
-            Object state = s.alloc(n.stateSize);
-            int fd = (int) n.call(n.socket, state, AF_UNIX, SOCK_DGRAM, 0);
+            Object state = s.allocState();
+            int fd = (int) n.call(n.socket, state, AF_UNIX, SOCK_DGRAM | n.platform.sockCloexec, 0);
             if (fd < 0) {
                 throw new IOException("cannot create unix datagram socket for " + path + ": " + n.describe(s.errno(state)));
             }
@@ -291,7 +308,7 @@ public final class UnixDatagramSocket implements Closeable {
                 throw new IOException("unix datagram socket closed: " + path);
             }
             try (Native.Scope s = nat.scope()) {
-                Object state = s.alloc(nat.stateSize);
+                Object state = s.allocState();
                 Object buf = s.alloc(Math.max(1, len));
                 s.buffer(buf).put(0, data, off, len);
                 long n = (long) nat.call(nat.send, state, f, buf, (long) len, nat.platform.msgDontWait);
@@ -308,6 +325,11 @@ public final class UnixDatagramSocket implements Closeable {
     /** Whether the socket is still open. */
     public boolean isOpen() {
         return fd >= 0;
+    }
+
+    /** The file descriptor, or -1 when closed; for tests. */
+    int fd() {
+        return fd;
     }
 
     /** The path this socket is connected to. */
@@ -336,8 +358,9 @@ public final class UnixDatagramSocket implements Closeable {
     private static final class Native {
         final Platform platform;
         final MethodHandle socket, connect, send, close, strerror;
-        final long stateSize, errnoOffset;
-        private final Method ofConfined, allocate, arenaClose, asByteBuffer, reinterpret, address;
+        final long errnoOffset;
+        private final Object stateLayout;
+        private final Method ofConfined, allocate, allocateLayout, arenaClose, asByteBuffer, reinterpret, address;
 
         Native(Platform platform) throws ReflectiveOperationException {
             this.platform = platform;
@@ -369,8 +392,7 @@ public final class UnixDatagramSocket implements Closeable {
 
             // errno is copied by the downcall stub right after the call into a segment passed as an extra leading argument
             Object capture = optC.getMethod("captureCallState", String[].class).invoke(null, (Object) new String[] { "errno" });
-            Object stateLayout = optC.getMethod("captureStateLayout").invoke(null);
-            stateSize = (long) layoutC.getMethod("byteSize").invoke(stateLayout);
+            stateLayout = optC.getMethod("captureStateLayout").invoke(null);
             Object errnoPath = Array.newInstance(pathC, 1);
             Array.set(errnoPath, 0, pathC.getMethod("groupElement", String.class).invoke(null, "errno"));
             errnoOffset = (long) layoutC.getMethod("byteOffset", errnoPath.getClass()).invoke(stateLayout, errnoPath);
@@ -386,6 +408,7 @@ public final class UnixDatagramSocket implements Closeable {
 
             ofConfined = arenaC.getMethod("ofConfined");
             allocate = arenaC.getMethod("allocate", long.class);
+            allocateLayout = arenaC.getMethod("allocate", layoutC);
             arenaClose = arenaC.getMethod("close");
             asByteBuffer = segC.getMethod("asByteBuffer");
             reinterpret = segC.getMethod("reinterpret", long.class);
@@ -489,6 +512,11 @@ public final class UnixDatagramSocket implements Closeable {
 
             Object alloc(long size) throws IOException {
                 return invoke(allocate, arena, size);
+            }
+
+            /** A call-state segment with the size and alignment of the capture layout. */
+            Object allocState() throws IOException {
+                return invoke(allocateLayout, arena, stateLayout);
             }
 
             ByteBuffer buffer(Object segment) throws IOException {

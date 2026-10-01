@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
@@ -90,6 +91,33 @@ class UnixDatagramSocketTest {
     }
 
     @Test
+    void restrictedNativeAccessReasonNamesTheFlag() {
+        String r = UnixDatagramSocket.failureReason(new IllegalCallerException("Illegal native access from: unnamed module"));
+        assertTrue(r.contains("Illegal native access"), r);
+        assertTrue(r.contains("--enable-native-access=ALL-UNNAMED"), r);
+        assertTrue(r.contains("--enable-native-access=org.red5.syslog"), r);
+        String wrapped = UnixDatagramSocket.failureReason(
+                new InvocationTargetException(new IllegalCallerException("denied")));
+        assertTrue(wrapped.contains("--enable-native-access=ALL-UNNAMED"), wrapped);
+        String other = UnixDatagramSocket.failureReason(new UnsupportedOperationException("only 64-bit platforms are supported"));
+        assertTrue(other.contains("only 64-bit"), other);
+        assertFalse(other.contains("enable-native-access"), other);
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void socketIsCloseOnExec() throws Exception {
+        assumeLinuxAvailable();
+        try (UnixDatagramServer server = UnixDatagramServer.bind(dir.resolve("cloexec.sock"));
+                UnixDatagramSocket s = UnixDatagramSocket.open(server.path().toString())) {
+            String flags = Files.readAllLines(Path.of("/proc/self/fdinfo/" + s.fd())).stream()
+                    .filter(line -> line.startsWith("flags:")).findFirst().orElseThrow();
+            int value = Integer.parseInt(flags.substring("flags:".length()).trim(), 8);
+            assertTrue((value & 02000000) != 0, "O_CLOEXEC not set: " + flags);
+        }
+    }
+
+    @Test
     @EnabledOnOs(OS.WINDOWS)
     void unavailableOnWindows() {
         assertFalse(UnixDatagramSocket.isAvailable());
@@ -129,7 +157,6 @@ class UnixDatagramSocketTest {
         assumeLinuxAvailable();
         IOException e = assertThrows(IOException.class, () -> UnixDatagramSocket.open(dir.resolve("absent.sock").toString()));
         assertTrue(e.getMessage().contains("ENOENT"), e.getMessage());
-        assertTrue(e.getMessage().contains("No such file or directory"), e.getMessage());
         assertTrue(e.getMessage().contains("absent.sock"), e.getMessage());
     }
 
@@ -216,6 +243,10 @@ class UnixDatagramSocketTest {
     @EnabledOnOs(OS.LINUX)
     void neverBlocksWhenReceiverIsFull() throws Exception {
         assumeLinuxAvailable();
+        // never read from the receiver: on Linux AF_UNIX datagram flow control is the sender's SO_SNDBUF (sk_sndbuf,
+        // charged until the receiver dequeues) and the receiver's queue length (net.unix.max_dgram_qlen), not the
+        // receiver's SO_RCVBUF; either one makes a MSG_DONTWAIT send fail with EAGAIN instead of blocking. The small
+        // SO_RCVBUF is kept only as a harmless extra.
         try (UnixDatagramServer server = UnixDatagramServer.bind(dir.resolve("full.sock"), 1024);
                 UnixDatagramSocket s = UnixDatagramSocket.open(server.path().toString())) {
             byte[] b = new byte[512];

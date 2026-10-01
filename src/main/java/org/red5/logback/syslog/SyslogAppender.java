@@ -26,11 +26,11 @@ import org.slf4j.Marker;
 import org.slf4j.event.KeyValuePair;
 
 import org.red5.syslog.AbortableSyslog;
+import org.red5.syslog.SyslogConstants;
 import org.red5.syslog.SyslogFacility;
 import org.red5.syslog.SyslogIF;
 import org.red5.syslog.SyslogLevel;
 import org.red5.syslog.SyslogMessageIF;
-import org.red5.syslog.SyslogConstants;
 import org.red5.syslog.SyslogMessageModifierIF;
 import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogConfig;
@@ -207,10 +207,13 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             cfg.setSendLocalTimestamp(sendLocalTimestamp);
             // a UDP datagram carries at most 65507 bytes: a larger limit would make an oversized datagram fail on send, and the
             // failed line would then sit at the head of the backlog and block every later line; capped, the ported splitter
-            // breaks long messages into several datagrams instead
+            // breaks long messages into several datagrams instead. Unix datagrams have a similar (system-dependent) limit
+            // and get the same cap.
             int limit = effectiveMaxMessageLength();
-            if (protocol == Protocol.UDP && limit > UDP_MAX_PAYLOAD) {
-                addWarn("syslog appender [" + getName() + "]: maxMessageLength " + limit + " lowered to " + UDP_MAX_PAYLOAD + " (UDP datagram limit)");
+            boolean unixDatagram = protocol == Protocol.UNIX && unixSocketType == UnixSocketType.DATAGRAM;
+            if ((protocol == Protocol.UDP || unixDatagram) && limit > UDP_MAX_PAYLOAD) {
+                addWarn("syslog appender [" + getName() + "]: maxMessageLength " + limit + " lowered to " + UDP_MAX_PAYLOAD
+                        + (unixDatagram ? " (unix datagram limit)" : " (UDP datagram limit)"));
                 limit = UDP_MAX_PAYLOAD;
             }
             cfg.setMaxMessageLength(limit);
@@ -220,9 +223,16 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             cfg.setUseStructuredData(rfc5424);
             if (rfc5424) {
                 // RFC 5424 carries the application name in the header (APP-NAME) and the modifiers act on the MSG text
-                // only; the ported ident prefix and cfg-level modifiers would land in MSGID and corrupt the frame.
+                // only; the ported ident prefix and cfg-level modifiers would land in MSGID and corrupt the frame. Clear any
+                // ident a config class sets by default (UnixSocketSyslogConfig sets "java").
+                cfg.setIdent(null);
                 activeModifiers = List.copyOf(modifiers);
                 structuredDataMap = buildStructuredDataMap();
+                if (unixDatagram) {
+                    addWarn("syslog appender [" + getName() + "]: local syslog daemons reading /dev/log (journald, rsyslog) do"
+                            + " not parse RFC 5424 and log the header as text; use RFC 3164 (rfc5424 false) for the local socket,"
+                            + " and RFC 5424 with network collectors or stream listeners that parse it");
+                }
             } else {
                 activeModifiers = List.of();
                 structuredDataMap = null;

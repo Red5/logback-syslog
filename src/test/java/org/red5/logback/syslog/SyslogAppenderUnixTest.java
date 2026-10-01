@@ -137,6 +137,135 @@ class SyslogAppenderUnixTest {
     }
 
     @Test
+    @EnabledOnOs(OS.LINUX)
+    void rfc5424FramesCarryNoDefaultIdent() throws Exception {
+        assumeDatagram();
+        try (UnixDatagramServer server = UnixDatagramServer.bind(dir.resolve("r5424.sock"))) {
+            LoggerContext ctx = context();
+            SyslogAppender a = unix(ctx, server.path());
+            a.setSync(true);
+            a.setRfc5424(true);
+            a.start();
+            Logger l = ctx.getLogger("t.R5424");
+            l.addAppender(a);
+            try {
+                l.info("plain");
+                String m = server.poll(5000);
+                assertNotNull(m);
+                assertTrue(m.matches("<134>1 \\S+ \\S+ unixapp - - - plain"), m);
+                assertFalse(m.contains("java:"), m);
+            } finally {
+                a.stop();
+            }
+            ctx = context();
+            a = unix(ctx, server.path());
+            a.setSync(true);
+            a.setRfc5424(true);
+            StructuredDataParam sd = new StructuredDataParam();
+            sd.setId("meta@1234");
+            sd.addParam("k", "v");
+            a.addStructuredData(sd);
+            a.start();
+            l = ctx.getLogger("t.R5424");
+            l.addAppender(a);
+            try {
+                l.info("with-sd");
+                String m = server.poll(5000);
+                assertNotNull(m);
+                assertTrue(m.matches("<134>1 \\S+ \\S+ unixapp - - \\[meta@1234 k=\"v\"\\] with-sd"), m);
+                assertFalse(m.contains("java:"), m);
+            } finally {
+                a.stop();
+            }
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void rfc5424OverDatagramWarnsButStarts() {
+        assumeDatagram();
+        LoggerContext ctx = context();
+        SyslogAppender a = unix(ctx, dir.resolve("warn.sock"));
+        a.setRfc5424(true);
+        a.start();
+        try {
+            assertTrue(a.isStarted());
+            assertEquals(1, SyslogAppenderFailureTest.statuses(ctx, Status.WARN, "do not parse RFC 5424").size());
+        } finally {
+            a.stop();
+        }
+        LoggerContext ctx2 = context();
+        SyslogAppender b = unix(ctx2, dir.resolve("warn2.sock"));
+        b.setRfc5424(true);
+        b.setUnixSocketType(UnixSocketType.STREAM);
+        b.start();
+        try {
+            assertTrue(b.isStarted());
+            assertTrue(SyslogAppenderFailureTest.statuses(ctx2, Status.WARN, "RFC 5424").isEmpty(), "no warning for STREAM");
+        } finally {
+            b.stop();
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void maxMessageLengthIsCappedForDatagramOnly() {
+        assumeDatagram();
+        LoggerContext ctx = context();
+        SyslogAppender a = unix(ctx, dir.resolve("cap.sock"));
+        a.setMaxMessageLength(100_000);
+        a.start();
+        try {
+            assertTrue(a.isStarted());
+            assertEquals(List.of("syslog appender [U]: maxMessageLength 100000 lowered to 65507 (unix datagram limit)"),
+                    SyslogAppenderFailureTest.statuses(ctx, Status.WARN, "lowered to"));
+        } finally {
+            a.stop();
+        }
+        LoggerContext ctx2 = context();
+        SyslogAppender b = unix(ctx2, dir.resolve("cap2.sock"));
+        b.setMaxMessageLength(100_000);
+        b.setUnixSocketType(UnixSocketType.STREAM);
+        b.start();
+        try {
+            assertTrue(SyslogAppenderFailureTest.statuses(ctx2, Status.WARN, "lowered to").isEmpty(), "no cap for STREAM");
+        } finally {
+            b.stop();
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void asyncStopClosesTheDatagramSocket() throws Exception {
+        assumeDatagram();
+        LoggerContext ctx = context();
+        try (UnixDatagramServer server = UnixDatagramServer.bind(dir.resolve("async.sock"))) {
+            Logger l = ctx.getLogger("t.Async");
+            asyncCycle(ctx, l, server);   // warm up
+            int before = UnixDatagramTestSeam.openFdCount();
+            for (int i = 0; i < 20; i++) {
+                asyncCycle(ctx, l, server);
+            }
+            int after = UnixDatagramTestSeam.openFdCount();
+            assertTrue(after - before <= 2, "fd count grew from " + before + " to " + after);
+        }
+    }
+
+    private void asyncCycle(LoggerContext ctx, Logger l, UnixDatagramServer server) throws Exception {
+        SyslogAppender a = unix(ctx, server.path());   // default async queue and writer thread
+        a.start();
+        l.addAppender(a);
+        try {
+            l.info("async-cycle");
+            assertNotNull(server.poll(5000));
+        } finally {
+            l.detachAppender(a);
+            a.stop();
+        }
+        assertFalse(a.writerThread().isAlive(), "writer thread ended");
+    }
+
+    @Test
     @EnabledOnOs({ OS.LINUX, OS.MAC })
     void streamTypeStillWorks() throws Exception {
         LoggerContext ctx = context();
