@@ -7,6 +7,7 @@ import java.nio.channels.SocketChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 
+import org.red5.syslog.AbortableSyslog;
 import org.red5.syslog.SyslogRuntimeException;
 import org.red5.syslog.impl.AbstractSyslog;
 import org.red5.syslog.impl.AbstractSyslogWriter;
@@ -22,13 +23,14 @@ import org.red5.syslog.impl.AbstractSyslogWriter;
  * of the LGPL license is available in the META-INF folder in all
  * distributions of Syslog4j and in the base directory of the "doc" ZIP.</p>
  */
-public class UnixSocketSyslog extends AbstractSyslog {
+public class UnixSocketSyslog extends AbstractSyslog implements AbortableSyslog {
 
     private static final long serialVersionUID = 1L;
     private static final int SOCK_STREAM = 1;
 
     protected UnixSocketSyslogConfig unixConfig;
-    private transient WritableByteChannel channel;
+    private transient volatile WritableByteChannel channel;
+    private transient volatile boolean aborted;
 
     @Override
     public void initialize() throws SyslogRuntimeException {
@@ -47,9 +49,16 @@ public class UnixSocketSyslog extends AbstractSyslog {
     }
 
     private synchronized WritableByteChannel channel() throws IOException {
+        if (aborted) {
+            throw new IOException("transport aborted");
+        }
         if (channel == null) {
             UnixDomainSocketAddress addr = UnixDomainSocketAddress.of(Path.of(unixConfig.getPath()));
             channel = SocketChannel.open(addr);
+            if (aborted) {   // abort() ran while connecting and could not see this channel yet
+                closeQuietly();
+                throw new IOException("transport aborted");
+            }
         }
         return channel;
     }
@@ -72,10 +81,18 @@ public class UnixSocketSyslog extends AbstractSyslog {
         }
     }
 
+    /** Closes the channel without taking the monitor held by a blocked write, and refuses new connections. */
+    @Override
+    public void abort() {
+        aborted = true;
+        closeQuietly();
+    }
+
     private void closeQuietly() {
         try {
-            if (channel != null) {
-                channel.close();
+            WritableByteChannel ch = channel;
+            if (ch != null) {
+                ch.close();
             }
         } catch (IOException ignored) {
             // nothing to do

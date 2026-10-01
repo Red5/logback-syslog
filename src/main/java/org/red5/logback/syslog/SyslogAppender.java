@@ -19,6 +19,7 @@ import ch.qos.logback.classic.PatternLayout;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.AppenderBase;
 
+import org.red5.syslog.AbortableSyslog;
 import org.red5.syslog.SyslogFacility;
 import org.red5.syslog.SyslogIF;
 import org.red5.syslog.SyslogLevel;
@@ -198,7 +199,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             Generation g = new Generation(queueSize);
             droppedWhileStopping.set(0);
             gen = g;
-            g.writer = Thread.ofVirtual().name("red5-syslog-" + getName()).start(() -> drain(g));
+            g.writer = Thread.ofPlatform().daemon().name("red5-syslog-" + getName()).start(() -> drain(g));
         }
         super.start();
     }
@@ -619,11 +620,9 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 return;
             }
             super.stop();   // AppenderBase.doAppend ignores events from here on
-            if (g != null) {
-                shutdownWriter(g);
-            }
+            boolean writerStuck = g != null && shutdownWriter(g);
             stopLayouts();
-            destroySyslog();
+            destroySyslog(writerStuck);
             // whatever is still waiting in the backlog is lost now; count it, and anything an abandoned writer adds later
             RingBufferBackLogHandler h = backlog;
             int leftInBacklog = h == null ? 0 : h.close();
@@ -637,7 +636,8 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         }
     }
 
-    private void shutdownWriter(Generation g) {
+    /** @return true if the writer thread is still alive after it was abandoned and aborted */
+    private boolean shutdownWriter(Generation g) {
         Thread w = g.writer;
         try {
             if (shutdownTimeoutMs > 0) {
@@ -649,7 +649,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         if (w.isAlive()) {
             // timeout 0, timeout expired, or the caller was interrupted: stop waiting for the drain
             g.abandoned = true;
-            // the ported TCP writer retries a failed write; each retry swallows one interrupt, so keep interrupting
+            // a platform thread blocked in socket I/O ignores interrupts, and the ported writers hold a monitor around
+            // that I/O: close the socket or channel without locking so the blocked call fails now
+            if (syslog instanceof AbortableSyslog ab) {
+                ab.abort();
+            }
+            // interrupts still release a writer waiting elsewhere (e.g. in an overridden send()); keep interrupting
             long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1000);
             boolean callerInterrupted = false;
             while (w.isAlive() && System.nanoTime() < until) {
@@ -671,12 +676,19 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             dropped.addAndGet(left.size());
             droppedWhileStopping.addAndGet(left.size());
         }
+        return w.isAlive();
     }
 
-    private void destroySyslog() {
+    private void destroySyslog(boolean writerStuck) {
         SyslogIF s = syslog;
         syslog = null;
         instanceName = null;
+        if (s instanceof AbortableSyslog ab && writerStuck) {
+            // shutdown() would wait for the monitor the stuck writer holds; abort() already closed the transport
+            ab.abort();
+            addWarn("syslog appender [" + getName() + "]: writer thread did not stop; transport aborted");
+            return;
+        }
         if (s != null) {
             try {
                 s.shutdown();   // closes the transport's socket or channel

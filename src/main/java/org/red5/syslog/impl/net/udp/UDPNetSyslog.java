@@ -6,6 +6,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
 
+import org.red5.syslog.AbortableSyslog;
 import org.red5.syslog.SyslogRuntimeException;
 import org.red5.syslog.impl.AbstractSyslogWriter;
 import org.red5.syslog.impl.net.AbstractNetSyslog;
@@ -21,10 +22,12 @@ import org.red5.syslog.impl.net.AbstractNetSyslog;
 * @author &lt;syslog4j@productivity.org&gt;
 * @version $Id: UDPNetSyslog.java,v 1.18 2010/10/27 06:18:10 cvs Exp $
 */
-public class UDPNetSyslog extends AbstractNetSyslog {
+public class UDPNetSyslog extends AbstractNetSyslog implements AbortableSyslog {
 	private static final long serialVersionUID = 5259485504549037999L;
 	
-	protected DatagramSocket socket = null;
+	protected volatile DatagramSocket socket = null;
+
+	protected volatile boolean aborted = false;
 	
 	public void initialize() throws SyslogRuntimeException {
 		super.initialize();
@@ -53,6 +56,10 @@ public class UDPNetSyslog extends AbstractNetSyslog {
 	}
 
 	protected void write(int level, byte[] message) throws SyslogRuntimeException {
+		if (this.aborted) {
+			throw new SyslogRuntimeException("transport aborted");
+		}
+		
     	if (this.socket == null) {
    			createDatagramSocket(false);
     	}
@@ -93,6 +100,19 @@ public class UDPNetSyslog extends AbstractNetSyslog {
 		if (this.socket != null) {
 			this.socket.close();
 			this.socket = null;
+		}
+	}
+
+	/**
+	 * Closes the datagram socket without locking and refuses further writes.
+	 */
+	public void abort() {
+		this.aborted = true;
+		
+		DatagramSocket s = this.socket;
+		
+		if (s != null) {
+			s.close();
 		}
 	}
 

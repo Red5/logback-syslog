@@ -1,5 +1,6 @@
 package org.red5.syslog.impl.net.tcp;
 
+import org.red5.syslog.AbortableSyslog;
 import org.red5.syslog.SyslogRuntimeException;
 import org.red5.syslog.impl.AbstractSyslogWriter;
 import org.red5.syslog.impl.net.AbstractNetSyslog;
@@ -15,10 +16,12 @@ import org.red5.syslog.impl.net.AbstractNetSyslog;
 * @author &lt;syslog4j@productivity.org&gt;
 * @version $Id: TCPNetSyslog.java,v 1.21 2010/11/28 04:43:31 cvs Exp $
 */
-public class TCPNetSyslog extends AbstractNetSyslog {
+public class TCPNetSyslog extends AbstractNetSyslog implements AbortableSyslog {
 	private static final long serialVersionUID = -2157528355215068721L;
 
-	protected TCPNetSyslogWriter writer = null;
+	protected volatile TCPNetSyslogWriter writer = null;
+
+	protected volatile boolean aborted = false;
 	
 	protected TCPNetSyslogConfigIF tcpNetSyslogConfig = null;
 	
@@ -83,6 +86,27 @@ public class TCPNetSyslog extends AbstractNetSyslog {
 		if (syslogWriter != null) {
 			syslogWriter.shutdown();
 		}
+	}
+
+	/**
+	 * Closes the writer's socket (including one still connecting) without taking the writer's monitor, so a write
+	 * blocked on an unresponsive peer fails promptly, and refuses new connections from now on.
+	 */
+	public void abort() {
+		this.aborted = true;
+		
+		TCPNetSyslogWriter syslogWriter = this.writer;
+		
+		if (syslogWriter != null) {
+			syslogWriter.abort();
+		}
+	}
+
+	/**
+	 * @return true once abort() was called
+	 */
+	public boolean isAborted() {
+		return this.aborted;
 	}
 
 	public void returnWriter(AbstractSyslogWriter syslogWriter) {

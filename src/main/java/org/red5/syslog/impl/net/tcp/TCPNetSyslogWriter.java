@@ -33,7 +33,10 @@ public class TCPNetSyslogWriter extends AbstractSyslogWriter {
 
 	protected TCPNetSyslog tcpNetSyslog = null;
 	
-	protected Socket socket = null;
+	protected volatile Socket socket = null;
+
+	/** The socket being connected or handshaken, visible to abort() before it is assigned to socket. */
+	protected volatile Socket connectingSocket = null;
 	
 	protected TCPNetSyslogConfigIF tcpNetSyslogConfig = null;
 	
@@ -59,9 +62,14 @@ public class TCPNetSyslogWriter extends AbstractSyslogWriter {
 		SocketFactory socketFactory = obtainSocketFactory();
 		
 		Socket newSocket = socketFactory.createSocket();
+		this.connectingSocket = newSocket;
 		try {
+			if (this.tcpNetSyslog.isAborted()) {
+				throw new IOException("transport aborted");
+			}
 			newSocket.connect(new InetSocketAddress(hostAddress,port),this.tcpNetSyslogConfig.getConnectTimeoutMillis());
 		} catch (IOException ioe) {
+			this.connectingSocket = null;
 			try {
 				newSocket.close();
 			} catch (IOException ignore) {
@@ -92,6 +100,28 @@ public class TCPNetSyslogWriter extends AbstractSyslogWriter {
 				//
 			}
 			throw e;
+			
+		} finally {
+			this.connectingSocket = null;
+		}
+	}
+
+	/**
+	 * Closes the current and any connecting socket without taking this writer's monitor, so a thread blocked in
+	 * connect, handshake or write on them fails promptly. Used by TCPNetSyslog.abort().
+	 */
+	public void abort() {
+		closeQuietly(this.connectingSocket);
+		closeQuietly(this.socket);
+	}
+
+	private static void closeQuietly(Socket s) {
+		if (s != null) {
+			try {
+				s.close();
+			} catch (IOException ignore) {
+				//
+			}
 		}
 	}
 	
@@ -107,6 +137,10 @@ public class TCPNetSyslogWriter extends AbstractSyslogWriter {
 	}
 	
 	protected Socket getSocket() throws SyslogRuntimeException {
+		if (this.tcpNetSyslog.isAborted()) {
+			throw new SyslogRuntimeException("transport aborted");
+		}
+		
 		if (this.socket != null && this.socket.isConnected()) {
 			int freshConnectionInterval = this.tcpNetSyslogConfig.getFreshConnectionInterval();
 			

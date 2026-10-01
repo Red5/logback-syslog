@@ -52,6 +52,23 @@ class SyslogAppenderLifecycleTest {
     }
 
     @Test
+    void writerIsOnePlatformDaemonThreadPerAppender() {
+        LoggerContext ctx = newContext();
+        SyslogAppender a = appender(ctx, "W", Protocol.UDP, 15192);
+        a.start();
+        try {
+            Thread w = a.writerThread();
+            assertNotNull(w);
+            // the ported writers synchronize around blocking socket I/O, which would pin a virtual thread's carrier
+            assertFalse(w.isVirtual(), "writer must be a platform thread");
+            assertTrue(w.isDaemon(), "writer must not keep the JVM alive");
+            assertEquals("red5-syslog-W", w.getName());
+        } finally {
+            a.stop();
+        }
+    }
+
+    @Test
     void stopWithEmptyQueueIsQuick() {
         for (boolean sync : new boolean[] { false, true }) {
             LoggerContext ctx = newContext();
