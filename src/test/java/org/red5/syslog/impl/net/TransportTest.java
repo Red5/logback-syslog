@@ -6,7 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import org.junit.jupiter.api.Test;
@@ -21,6 +23,9 @@ import org.red5.syslog.testsupport.CapturingServer;
 import org.red5.syslog.testsupport.TestKeystore;
 
 class TransportTest {
+
+    private static final String[] SSL_PROPS = { "javax.net.ssl.keyStore", "javax.net.ssl.keyStorePassword",
+            "javax.net.ssl.trustStore", "javax.net.ssl.trustStorePassword" };
 
     private static String must(CapturingServer s, long ms) throws InterruptedException {
         String m = s.poll(ms);
@@ -185,6 +190,27 @@ class TransportTest {
 
     @Test
     void tlsDelivers(@TempDir Path dir) throws Exception {
+        // The ported SSL client and server configure JVM-wide javax.net.ssl.* properties and cache the
+        // default SSLContext, so only one TLS keystore per surefire JVM works. Restore the properties
+        // afterwards so the deleted temp keystore is not left behind.
+        Map<String, String> saved = new HashMap<>();
+        for (String k : SSL_PROPS) {
+            saved.put(k, System.getProperty(k));
+        }
+        try {
+            runTls(dir);
+        } finally {
+            saved.forEach((k, v) -> {
+                if (v == null) {
+                    System.clearProperty(k);
+                } else {
+                    System.setProperty(k, v);
+                }
+            });
+        }
+    }
+
+    private void runTls(Path dir) throws Exception {
         Path ks = TestKeystore.create(dir, "changeit");
         try (CapturingServer s = CapturingServer.start("ssl", 15144, cfg -> {
             SSLTCPNetSyslogServerConfigIF ssl = (SSLTCPNetSyslogServerConfigIF) cfg;
