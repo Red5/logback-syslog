@@ -70,6 +70,7 @@ public interface SyslogConstants extends Serializable {
 	public static final boolean TCP_REUSE_ADDRESS_DEFAULT = true;
 	public static final boolean TCP_SET_BUFFER_SIZE_DEFAULT = true;
 	public static final int TCP_FRESH_CONNECTION_INTERVAL_DEFAULT = -1;
+	public static final int TCP_CONNECT_TIMEOUT_MILLIS_DEFAULT = 3000;
 	
 	public static final int TCP_MAX_ACTIVE_SOCKETS_DEFAULT = 0;
 	public static final byte TCP_MAX_ACTIVE_SOCKETS_BEHAVIOR_DEFAULT = 0;

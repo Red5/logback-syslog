@@ -37,4 +37,8 @@ public interface TCPNetSyslogConfigIF extends AbstractNetSyslogConfigIF {
 
 	public int getFreshConnectionInterval();
 	public void setFreshConnectionInterval(int interval);
+
+	/** Socket connect timeout in milliseconds; 0 means no timeout. */
+	public int getConnectTimeoutMillis();
+	public void setConnectTimeoutMillis(int connectTimeoutMillis);
 }

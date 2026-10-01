@@ -44,6 +44,8 @@ public class TCPNetSyslogConfig extends AbstractNetSyslogConfig implements TCPNe
 	protected boolean setBufferSize = TCP_SET_BUFFER_SIZE_DEFAULT;
 	
 	protected int freshConnectionInterval = TCP_FRESH_CONNECTION_INTERVAL_DEFAULT;
+
+	protected int connectTimeoutMillis = TCP_CONNECT_TIMEOUT_MILLIS_DEFAULT;
 	
 	public TCPNetSyslogConfig() {
 		initialize();
@@ -148,6 +150,14 @@ public class TCPNetSyslogConfig extends AbstractNetSyslogConfig implements TCPNe
 
 	public void setFreshConnectionInterval(int freshConnectionInterval) {
 		this.freshConnectionInterval = freshConnectionInterval;
+	}
+
+	public int getConnectTimeoutMillis() {
+		return connectTimeoutMillis;
+	}
+
+	public void setConnectTimeoutMillis(int connectTimeoutMillis) {
+		this.connectTimeoutMillis = connectTimeoutMillis;
 	}
 
 	public Class getSyslogWriterClass() {

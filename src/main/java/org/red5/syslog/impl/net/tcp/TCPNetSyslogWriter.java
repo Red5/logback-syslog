@@ -3,6 +3,7 @@ package org.red5.syslog.impl.net.tcp;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 
 import javax.net.SocketFactory;
@@ -57,7 +58,17 @@ public class TCPNetSyslogWriter extends AbstractSyslogWriter {
 	protected Socket createSocket(InetAddress hostAddress, int port, boolean keepalive) throws IOException {
 		SocketFactory socketFactory = obtainSocketFactory();
 		
-		Socket newSocket = socketFactory.createSocket(hostAddress,port);
+		Socket newSocket = socketFactory.createSocket();
+		try {
+			newSocket.connect(new InetSocketAddress(hostAddress,port),this.tcpNetSyslogConfig.getConnectTimeoutMillis());
+		} catch (IOException ioe) {
+			try {
+				newSocket.close();
+			} catch (IOException ignore) {
+				//
+			}
+			throw ioe;
+		}
 
 		if (this.tcpNetSyslogConfig.isSoLinger()) {
 			newSocket.setSoLinger(true,this.tcpNetSyslogConfig.getSoLingerSeconds());

@@ -4,6 +4,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import ch.qos.logback.classic.Level;
@@ -38,7 +41,10 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private boolean rfc5424;
     private String unixSocketPath = "/dev/log";
     private String sslKeyStore, sslKeyStorePassword, sslTrustStore, sslTrustStorePassword;
-    private boolean sync = true;
+    private boolean sync;
+    private int queueSize = 4096;
+    private boolean blockWhenFull;
+    private long shutdownTimeoutMs = 2000;
 
     private static final AtomicLong COUNTER = new AtomicLong();
 
@@ -46,6 +52,14 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private PatternLayout stackTraceLayout;
     private SyslogIF syslog;
     private String instanceName;
+
+    private BlockingQueue<ILoggingEvent> queue;
+    private Thread writer;
+    private final AtomicLong dropped = new AtomicLong();
+    private final AtomicLong lastDropReport = new AtomicLong();
+    private volatile boolean running;
+    private final Object stopLock = new Object();
+    private volatile boolean abandoned;   // set when stop() gives up waiting; the writer must exit without sending more
 
     @Override
     public void start() {
@@ -80,6 +94,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             stopLayouts();
             return;
         }
+        if (!sync) {
+            queue = new ArrayBlockingQueue<>(queueSize);
+            running = true;
+            abandoned = false;
+            writer = Thread.ofVirtual().name("red5-syslog-" + getName()).start(this::drain);
+        }
         super.start();
     }
 
@@ -92,6 +112,12 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         }
         if (!throwableExcluded && (stackTracePattern == null || stackTracePattern.isEmpty())) {
             return "stackTracePattern must not be empty unless throwableExcluded is true";
+        }
+        if (queueSize <= 0) {
+            return "queueSize must be positive: " + queueSize;
+        }
+        if (shutdownTimeoutMs < 0) {
+            return "shutdownTimeoutMs must not be negative: " + shutdownTimeoutMs;
         }
         if (maxMessageLength <= 0) {
             return "maxMessageLength must be positive: " + maxMessageLength;
@@ -195,19 +221,90 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
 
     @Override
     protected void append(ILoggingEvent event) {
-        send(event);
+        if (sync) {
+            send(event);
+            return;
+        }
+        try {
+            event.prepareForDeferredProcessing();
+            if (!running) {
+                dropped.incrementAndGet();
+                return;
+            }
+            if (blockWhenFull) {
+                boolean queued = false;
+                while (running && !(queued = queue.offer(event, 100, TimeUnit.MILLISECONDS))) {
+                    // wait for room, but re-check running so stop() releases blocked producers
+                }
+                if (!queued) {
+                    dropped.incrementAndGet();
+                    return;
+                }
+            } else if (!queue.offer(event)) {
+                reportDrop();
+                return;
+            }
+            // stop() may have begun after the running check above; take the event back so it is counted, not lost
+            if (!running && queue.remove(event)) {
+                dropped.incrementAndGet();
+            }
+        } catch (InterruptedException e) {
+            dropped.incrementAndGet();
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException e) {
+            dropped.incrementAndGet();
+            addError("syslog enqueue failed: " + e.getMessage());
+        }
+    }
+
+    private void reportDrop() {
+        long n = dropped.incrementAndGet();
+        long now = System.currentTimeMillis();
+        long last = lastDropReport.get();
+        if (now - last > 10_000 && lastDropReport.compareAndSet(last, now)) {
+            addWarn("syslog queue full; " + n + " events dropped so far");
+        }
+    }
+
+    private void drain() {
+        try {
+            while (!abandoned && (running || !queue.isEmpty())) {
+                ILoggingEvent e = queue.poll(100, TimeUnit.MILLISECONDS);
+                if (e != null) {
+                    send(e);
+                }
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Number of events discarded because the queue was full or the appender was stopping. */
+    public long getDroppedCount() {
+        return dropped.get();
+    }
+
+    /** The writer thread of the most recent start, or null in sync mode; for tests. */
+    Thread writerThread() {
+        return writer;
     }
 
     /** Formats and writes one event; never throws. */
     protected void send(ILoggingEvent event) {
         try {
-            int level = toSyslogLevel(event.getLevel()).code();
-            for (String line : splitLines(layout.doLayout(withoutThrowable(event)))) {
-                syslog.log(level, line);
+            PatternLayout msgLayout = layout;
+            PatternLayout exLayout = stackTraceLayout;
+            SyslogIF out = syslog;
+            if (msgLayout == null || out == null) {
+                return;
             }
-            if (!throwableExcluded && event.getThrowableProxy() != null) {
-                for (String line : splitLines(stackTraceLayout.doLayout(event))) {
-                    syslog.log(level, line);
+            int level = toSyslogLevel(event.getLevel()).code();
+            for (String line : splitLines(msgLayout.doLayout(withoutThrowable(event)))) {
+                out.log(level, line);
+            }
+            if (!throwableExcluded && exLayout != null && event.getThrowableProxy() != null) {
+                for (String line : splitLines(exLayout.doLayout(event))) {
+                    out.log(level, line);
                 }
             }
         } catch (RuntimeException e) {
@@ -224,15 +321,63 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         };
     }
 
+    /**
+     * Not synchronized on the appender: AppenderBase.doAppend holds the appender monitor while a producer may be
+     * blocked in append() (blockWhenFull), so stop() first flips {@code running}, which releases such producers,
+     * and only then serializes the teardown on a private lock.
+     */
     @Override
     public void stop() {
-        super.stop();
-        stopLayouts();
+        if (!isStarted()) {
+            return;
+        }
+        running = false;
+        synchronized (stopLock) {
+            if (!isStarted()) {
+                return;
+            }
+            super.stop();   // AppenderBase.doAppend ignores events from here on
+            shutdownWriter();
+            stopLayouts();
+            destroySyslog();
+        }
+    }
+
+    private void shutdownWriter() {
+        Thread w = writer;
+        if (w != null) {
+            try {
+                w.join(shutdownTimeoutMs);
+                if (w.isAlive()) {
+                    abandoned = true;
+                    // the ported TCP writer retries a failed write; each retry swallows one interrupt, so keep interrupting
+                    long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1000);
+                    while (w.isAlive() && System.nanoTime() < until) {
+                        w.interrupt();
+                        w.join(50);
+                    }
+                }
+            } catch (InterruptedException e) {
+                w.interrupt();
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (queue != null) {
+            int left = queue.size();
+            if (left > 0) {
+                queue.clear();
+                dropped.addAndGet(left);
+                addWarn("syslog appender stopped with " + left + " undelivered events");
+            }
+        }
+    }
+
+    private void destroySyslog() {
         if (instanceName != null) {
             String name = instanceName;
             instanceName = null;
             try {
-                Syslog.destroyInstance(name);
+                Syslog.destroyInstance(name);   // also closes a socket the writer may still be blocked on
             } catch (RuntimeException e) {
                 addError("syslog instance destroy failed: " + e.getMessage());
             }
@@ -258,4 +403,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     public void setSslTrustStore(String v) { this.sslTrustStore = v; }
     public void setSslTrustStorePassword(String v) { this.sslTrustStorePassword = v; }
     public void setSync(boolean v) { this.sync = v; }
+    public void setQueueSize(int v) { this.queueSize = v; }
+    public void setBlockWhenFull(boolean v) { this.blockWhenFull = v; }
+    public void setShutdownTimeoutMs(long v) { this.shutdownTimeoutMs = v; }
 }
