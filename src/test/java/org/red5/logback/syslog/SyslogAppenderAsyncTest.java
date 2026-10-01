@@ -497,6 +497,7 @@ class SyslogAppenderAsyncTest {
         LoggerContext ctx = newContext();
         SyslogAppender a = tcpAppender(ctx, 15168);
         a.setBacklogSize(3);
+        a.backoffInitialMs = 0;   // b6 must trigger the replay at once, not wait out a reconnect backoff
         a.start();
         Logger l = ctx.getLogger("t.Bounded");
         l.addAppender(a);

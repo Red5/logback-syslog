@@ -13,6 +13,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.PatternLayout;
@@ -118,6 +119,48 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     private final AtomicLong lastFailureReport = new AtomicLong();
     private final Object stopLock = new Object();
     long dropReportIntervalMs = 10_000;   // package-private for tests
+    LongSupplier nanoClock = System::nanoTime;   // package-private for tests: drives the reconnect backoff
+    long backoffInitialMs = 1000;   // package-private for tests
+    long backoffMaxMs = 30_000;     // package-private for tests
+    final AtomicLong transportAttempts = new AtomicLong();   // for tests: replays and direct writes tried on the transport
+    private volatile Backoff backoff;
+
+    /**
+     * Reconnect backoff for one start cycle. After a failed write or replay no connection is attempted until the
+     * deadline passes; the delay starts at the initial value and doubles up to the maximum, and a success resets it.
+     */
+    static final class Backoff {
+        private final long initialNanos;
+        private final long maxNanos;
+        private final LongSupplier clock;
+        private long delayNanos;
+        private long deadline;
+        private boolean waiting;
+
+        Backoff(long initialMs, long maxMs, LongSupplier clock) {
+            this.initialNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(0, initialMs));
+            this.maxNanos = Math.max(initialNanos, TimeUnit.MILLISECONDS.toNanos(maxMs));
+            this.clock = clock;
+        }
+
+        synchronized boolean due() {
+            return !waiting || clock.getAsLong() - deadline >= 0;
+        }
+
+        synchronized void failed() {
+            if (delayNanos == 0) {
+                delayNanos = initialNanos;
+            }
+            deadline = clock.getAsLong() + delayNanos;
+            waiting = true;
+            delayNanos = Math.min(delayNanos * 2, maxNanos);
+        }
+
+        synchronized void succeeded() {
+            waiting = false;
+            delayNanos = 0;
+        }
+    }
 
     @Override
     public void start() {
@@ -169,8 +212,10 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 modifiers.forEach(cfg::addMessageModifier);
             }
             backlog = null;
+            backoff = null;
             if (backlogSize > 0) {
                 cfg.setThrowExceptionOnWrite(false);  // failures go to the backlog, which reports and counts them
+                backoff = new Backoff(backoffInitialMs, backoffMaxMs, nanoClock);
                 backlog = new RingBufferBackLogHandler(backlogSize);
                 backlog.setListener(new BacklogReporter());
                 cfg.addBackLogHandler(backlog);
@@ -469,7 +514,11 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
         try {
             while (!g.abandoned && (g.running || !g.queue.isEmpty())) {
                 ILoggingEvent e = g.queue.poll(100, TimeUnit.MILLISECONDS);
-                if (e != null) {
+                if (e == null) {
+                    if (g.running && !g.abandoned) {
+                        replayIfDue();
+                    }
+                } else {
                     try {
                         send(e);
                     } catch (Throwable t) {
@@ -564,8 +613,22 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             }
             return;
         }
+        Backoff b = backoff;
         if (out instanceof AbstractSyslog as && h.size() > 0) {
-            if (!h.replay(as::logPrepared)) {
+            boolean replayed = false;
+            if (b == null || b.due()) {
+                transportAttempts.incrementAndGet();
+                replayed = h.replay(as::logPrepared);
+                if (b != null) {
+                    if (replayed) {
+                        b.succeeded();
+                    } else {
+                        b.failed();
+                    }
+                }
+            }
+            if (!replayed) {
+                // still down, or inside the backoff window: queue behind the backlog without a connect attempt
                 if (structured != null) {
                     as.logToBackLog(level, structured);
                 } else {
@@ -574,16 +637,55 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 return;
             }
         }
+        transportAttempts.incrementAndGet();
         if (structured != null) {
             out.log(level, structured);
         } else {
             out.log(level, line);
+        }
+        if (b != null) {
+            // the backlog was empty before this write, so anything in it now means the write failed
+            if (h.size() > 0) {
+                b.failed();
+            } else {
+                b.succeeded();
+            }
+        }
+    }
+
+    /**
+     * Called by the async writer when the queue is idle: replays the backlog once the backoff window has passed, so
+     * recovery does not wait for the next event.
+     */
+    private void replayIfDue() {
+        RingBufferBackLogHandler h = backlog;
+        SyslogIF out = syslog;
+        Backoff b = backoff;
+        if (h == null || b == null || !(out instanceof AbstractSyslog as) || h.size() == 0 || !b.due()) {
+            return;
+        }
+        try {
+            transportAttempts.incrementAndGet();
+            if (h.replay(as::logPrepared)) {
+                b.succeeded();
+            } else {
+                b.failed();
+            }
+        } catch (RuntimeException e) {
+            b.failed();
+            reportFailure("syslog replay failed: " + e.getMessage());
         }
     }
 
     /** The underlying syslog instance of the current start, or null; for tests. */
     SyslogIF syslogInstance() {
         return syslog;
+    }
+
+    /** The messages currently waiting in the backlog, oldest first; for tests. */
+    List<String> backlogMessages() {
+        RingBufferBackLogHandler h = backlog;
+        return h == null ? List.of() : h.messages();
     }
 
     /** Number of messages currently waiting in the backlog; for tests. */

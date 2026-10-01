@@ -189,6 +189,15 @@ public class RingBufferBackLogHandler implements SyslogBackLogHandlerIF {
         }
     }
 
+    /** The backlogged messages, oldest first; for tests and diagnostics. */
+    public synchronized List<String> messages() {
+        List<String> out = new ArrayList<>(buffer.size());
+        for (Entry e : buffer) {
+            out.add(e.message());
+        }
+        return out;
+    }
+
     public synchronized int size() {
         return buffer.size();
     }

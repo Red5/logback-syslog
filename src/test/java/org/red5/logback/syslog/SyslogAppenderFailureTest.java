@@ -102,6 +102,7 @@ class SyslogAppenderFailureTest {
         LoggerContext ctx = newContext();
         SyslogAppender a = tcp(ctx, 15190);
         a.setSync(true);
+        a.backoffInitialMs = 0;   // recovery is under test here, not the reconnect backoff
         a.start();
         Logger l = ctx.getLogger("t.Recover");
         l.addAppender(a);
