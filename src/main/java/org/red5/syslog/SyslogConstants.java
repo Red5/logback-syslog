@@ -130,7 +130,7 @@ public interface SyslogConstants extends Serializable {
 	
 	public static final String SYSLOG_LIBRARY_DEFAULT = "c";
 	
-	public static final int SYSLOG_SOCKET_TYPE_DEFAULT = SOCK_DGRAM;
+	public static final int SYSLOG_SOCKET_TYPE_DEFAULT = SOCK_STREAM;
 	public static final short SYSLOG_SOCKET_FAMILY_DEFAULT = AF_UNIX;
 	public static final String SYSLOG_SOCKET_LIBRARY_DEFAULT = "c";
 	public static final int SYSLOG_SOCKET_PROTOCOL_DEFAULT = 0;

@@ -7,6 +7,9 @@ import java.util.Set;
 
 import org.red5.syslog.impl.net.tcp.TCPNetSyslogConfig;
 import org.red5.syslog.impl.net.udp.UDPNetSyslogConfig;
+import org.red5.syslog.impl.unix.UnixSyslogConfig;
+import org.red5.syslog.impl.unix.socket.UnixSocketSyslogConfig;
+import org.red5.syslog.util.OSDetectUtility;
 import org.red5.syslog.util.SyslogUtility;
 
 /**
@@ -205,6 +208,11 @@ public final class Syslog implements SyslogConstants {
 	public synchronized static final void initialize() {
 		createInstance(UDP,new UDPNetSyslogConfig());
 		createInstance(TCP,new TCPNetSyslogConfig());
+
+		if (OSDetectUtility.isUnix()) {
+			createInstance(UNIX_SYSLOG,new UnixSyslogConfig());
+			createInstance(UNIX_SOCKET,new UnixSocketSyslogConfig());
+		}
 	}
 	
 	/**

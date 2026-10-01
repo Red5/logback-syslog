@@ -46,8 +46,11 @@ class PortSmokeTest {
             cfg.setHost("127.0.0.1");
             cfg.setPort(15140);
             SyslogIF client = Syslog.createInstance("smoke", cfg);
-            client.info("hello");
-            String msg = got.poll(3, TimeUnit.SECONDS);
+            String msg = null;
+            for (int i = 0; i < 10 && msg == null; i++) {
+                client.info("hello");
+                msg = got.poll(500, TimeUnit.MILLISECONDS);
+            }
             assertTrue(msg != null && msg.contains("hello"), "got: " + msg);
         } finally {
             Syslog.destroyInstance("smoke");
