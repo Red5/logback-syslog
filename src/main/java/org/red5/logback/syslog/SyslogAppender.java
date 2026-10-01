@@ -19,7 +19,6 @@ import ch.qos.logback.classic.PatternLayout;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.AppenderBase;
 
-import org.red5.syslog.Syslog;
 import org.red5.syslog.SyslogFacility;
 import org.red5.syslog.SyslogIF;
 import org.red5.syslog.SyslogLevel;
@@ -71,7 +70,7 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
 
     private PatternLayout layout;
     private PatternLayout stackTraceLayout;
-    private SyslogIF syslog;
+    private volatile SyslogIF syslog;
     private RingBufferBackLogHandler backlog;
     private String instanceName;
     private volatile int facilityCode;
@@ -182,9 +181,9 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
                 cfg.setThrowExceptionOnWrite(true);
                 cfg.addBackLogHandler(NullSyslogBackLogHandler.INSTANCE);
             }
-            // the Syslog registry is JVM-static and case-insensitive, so the name must be unique per appender
+            // a label only (the transport's protocol name); the static Syslog registry is not used
             instanceName = "red5-" + (getName() != null ? getName() + "-" : "") + COUNTER.incrementAndGet();
-            syslog = Syslog.createInstance(instanceName, cfg);
+            syslog = newSyslog(instanceName, cfg);
             if (rfc5424 && syslog instanceof AbstractSyslog as) {
                 // per instance: the ported default processor is JVM-wide and would leak one appender's APP-NAME to all
                 as.setStructuredMessageProcessor(new StructuredSyslogMessageProcessor(isEmpty(appName) ? null : appName));
@@ -202,6 +201,21 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
             g.writer = Thread.ofVirtual().name("red5-syslog-" + getName()).start(() -> drain(g));
         }
         super.start();
+    }
+
+    /**
+     * Creates and initializes the transport directly, as the static Syslog registry would but without registering it:
+     * the registry is JVM-wide, opens default instances on first use and sleeps on every destroy.
+     */
+    private static SyslogIF newSyslog(String label, AbstractSyslogConfig cfg) {
+        SyslogIF s;
+        try {
+            s = (SyslogIF) cfg.getSyslogClass().getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("cannot create syslog transport " + cfg.getSyslogClass().getName() + ": " + e, e);
+        }
+        s.initialize(label, cfg);
+        return s;
     }
 
     private String validate() {
@@ -660,13 +674,14 @@ public class SyslogAppender extends AppenderBase<ILoggingEvent> {
     }
 
     private void destroySyslog() {
-        if (instanceName != null) {
-            String name = instanceName;
-            instanceName = null;
+        SyslogIF s = syslog;
+        syslog = null;
+        instanceName = null;
+        if (s != null) {
             try {
-                Syslog.destroyInstance(name);   // also closes a socket the writer may still be blocked on
+                s.shutdown();   // closes the transport's socket or channel
             } catch (RuntimeException e) {
-                addError("syslog instance destroy failed: " + e.getMessage());
+                addError("syslog transport shutdown failed: " + e.getMessage());
             }
         }
     }
