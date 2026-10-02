@@ -7,9 +7,32 @@
   <artifactId>red5-logback-syslog</artifactId>
   <version>1.0.0-SNAPSHOT</version>
   <name>Red5 Logback Syslog</name>
+  <description>Logback syslog appender with a bundled syslog4j port</description>
+  <url>https://github.com/Red5/logback-syslog</url>
+  <organization>
+    <name>Red5</name>
+    <url>https://github.com/Red5</url>
+  </organization>
   <licenses>
     <license><name>LGPL-2.1</name><url>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html</url></license>
   </licenses>
+  <issueManagement>
+    <system>github</system>
+    <url>https://github.com/Red5/logback-syslog/issues</url>
+  </issueManagement>
+  <scm>
+    <url>https://github.com/Red5/logback-syslog</url>
+    <connection>scm:git:git@github.com:Red5/logback-syslog.git</connection>
+    <developerConnection>scm:git:git@github.com:Red5/logback-syslog.git</developerConnection>
+    <tag>HEAD</tag>
+  </scm>
+  <developers>
+    <developer>
+      <id>mondain</id>
+      <name>Paul Gregoire</name>
+      <email>mondain@gmail.com</email>
+    </developer>
+  </developers>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -32,6 +55,21 @@
         <artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version>
       </plugin>
       <plugin>
+        <artifactId>maven-source-plugin</artifactId><version>3.3.0</version>
+        <executions>
+          <execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-release-plugin</artifactId><version>3.1.1</version>
+        <configuration>
+          <autoVersionSubmodules>true</autoVersionSubmodules>
+          <useReleaseProfile>false</useReleaseProfile>
+          <releaseProfiles>release</releaseProfiles>
+          <goals>deploy</goals>
+        </configuration>
+      </plugin>
+      <plugin>
         <artifactId>maven-jar-plugin</artifactId><version>3.4.2</version>
         <configuration>
           <archive><manifestEntries><Automatic-Module-Name>org.red5.syslog</Automatic-Module-Name></manifestEntries></archive>
@@ -39,4 +77,41 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.8.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>ossrh</publishingServerId>
+              <autoPublish>true</autoPublish>
+            </configuration>
+          </plugin>
+          <plugin>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>3.11.3</version>
+            <configuration>
+              <release>${maven.compiler.release}</release>
+              <doclint>none</doclint>
+            </configuration>
+            <executions>
+              <execution><id>attach-javadocs</id><goals><goal>jar</goal></goals></execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.1</version>
+            <executions>
+              <execution><id>sign-artifacts</id><phase>verify</phase><goals><goal>sign</goal></goals></execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
